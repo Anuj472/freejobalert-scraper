@@ -81,10 +81,14 @@ class SupabaseClient:
     def job_exists(self, fja_url: str) -> bool:
         """Check if a job already exists by FreeJobAlert source URL."""
         try:
-            # Check by freejobalert_url field (we'll add this)
-            result = self.client.table('jobs').select('id').eq('freejobalert_url', fja_url).execute()
-            if len(result.data) > 0:
-                return True
+            # Try to check by freejobalert_url field (if column exists)
+            try:
+                result = self.client.table('jobs').select('id').eq('freejobalert_url', fja_url).execute()
+                if len(result.data) > 0:
+                    return True
+            except Exception:
+                # Column might not exist yet, ignore
+                pass
             
             # Fallback: check by job_url if it's a FreeJobAlert URL (old records)
             if self._is_freejobalert_url(fja_url):
@@ -144,6 +148,13 @@ class SupabaseClient:
                 insert_data['job_url'] = fja_url
                 logger.warning(f"No organization URL found, using FreeJobAlert URL: {fja_url[:80]}")
             
+            # Store FreeJobAlert source URL for tracking (if column exists)
+            try:
+                insert_data['freejobalert_url'] = fja_url
+            except Exception:
+                # Column might not exist, that's okay
+                pass
+            
             # Add dates
             if post_date:
                 insert_data['post_date'] = post_date
@@ -180,9 +191,6 @@ class SupabaseClient:
             
             if job_data.get('organization_url'):
                 insert_data['organization_url'] = job_data.get('organization_url')
-            
-            # Store FreeJobAlert source URL for tracking (if you add this column)
-            # insert_data['freejobalert_url'] = fja_url
             
             # Google Drive link (if already provided)
             if job_data.get('gdrive_link'):
@@ -224,6 +232,7 @@ class SupabaseClient:
             # Log what we're inserting for debugging
             logger.debug(f"Inserting job with {len(insert_data)} fields")
             logger.info(f"Job URL (organization): {insert_data.get('job_url', 'N/A')[:80]}")
+            logger.info(f"Source URL (FreeJobAlert): {fja_url[:80]}")
             
             # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
