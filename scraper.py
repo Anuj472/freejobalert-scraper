@@ -2,7 +2,8 @@
 
 import logging
 import time
-from typing import List, Optional
+import re
+from typing import List, Optional, Dict
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import requests
@@ -200,65 +201,104 @@ class FreeJobAlertScraper:
             # Extract details
             details = {
                 'job_url': details_url,
-                'description': '',
+                'full_description': '',
                 'official_notification_pdf': '',
                 'official_website': '',
+                'application_link': '',
                 'important_dates': {},
-                'application_fee': '',
+                'vacancy_details': {},
+                'salary': '',
                 'age_limit': '',
-                'vacancy_details': ''
+                'application_fee': '',
+                'selection_process': '',
+                'how_to_apply': ''
             }
             
-            # Extract PDF link - look for "Official Notification PDF" link
-            pdf_links = soup.find_all('a', href=True)
-            for link in pdf_links:
-                link_text = link.get_text(strip=True).lower()
-                href = link.get('href', '')
-                
-                if 'notification' in link_text and 'pdf' in link_text:
-                    if href and not href.startswith('#'):
-                        details['official_notification_pdf'] = urljoin(self.BASE_URL, href)
-                        break
-                elif 'click here' in link_text and href.endswith('.pdf'):
-                    details['official_notification_pdf'] = urljoin(self.BASE_URL, href)
-                    break
+            # Extract title from h1 or title tag
+            title_tag = soup.find('h1', class_='entry-title')
+            if title_tag:
+                details['title'] = title_tag.get_text(strip=True)
             
-            # Extract official website link
-            for link in pdf_links:
-                link_text = link.get_text(strip=True).lower()
-                href = link.get('href', '')
-                
-                if 'official website' in link_text or 'apply online' in link_text:
-                    if href and not href.startswith('#') and not href.endswith('.pdf'):
-                        details['official_website'] = urljoin(self.BASE_URL, href)
-                        break
+            # Find the main content area
+            content_div = soup.find('div', class_='entry-content') or soup.find('article')
             
-            # Extract job description
-            content_div = soup.find('div', class_='entry-content')
             if content_div:
-                # Get text content, skip scripts and styles
-                for script in content_div(["script", "style"]):
-                    script.decompose()
-                details['description'] = content_div.get_text(separator='\n', strip=True)[:2000]
-            
-            # Extract structured data from tables
-            tables = soup.find_all('table')
-            for table in tables:
-                rows = table.find_all('tr')
-                for row in rows:
-                    cells = row.find_all(['td', 'th'])
-                    if len(cells) >= 2:
-                        key = cells[0].get_text(strip=True).lower()
-                        value = cells[1].get_text(strip=True)
-                        
-                        if 'age' in key:
+                # Extract all links from content
+                links = content_div.find_all('a', href=True)
+                
+                for link in links:
+                    link_text = link.get_text(strip=True).lower()
+                    href = link.get('href', '')
+                    
+                    # Skip empty or anchor links
+                    if not href or href.startswith('#'):
+                        continue
+                    
+                    # Make absolute URL
+                    absolute_url = urljoin(self.BASE_URL, href)
+                    
+                    # Identify link type based on text and URL
+                    if 'notification' in link_text and ('pdf' in link_text or href.lower().endswith('.pdf')):
+                        details['official_notification_pdf'] = absolute_url
+                    elif href.lower().endswith('.pdf') and 'click here' in link_text:
+                        if not details['official_notification_pdf']:
+                            details['official_notification_pdf'] = absolute_url
+                    elif 'official website' in link_text or 'click here' in link_text:
+                        if 'apply' not in link_text and not href.lower().endswith('.pdf'):
+                            details['official_website'] = absolute_url
+                    elif 'apply online' in link_text or 'application' in link_text:
+                        details['application_link'] = absolute_url
+                
+                # Extract structured data from tables
+                tables = content_div.find_all('table')
+                for table in tables:
+                    table_data = self._extract_table_data(table)
+                    
+                    # Identify table purpose by headers or content
+                    if 'vacancy' in str(table).lower() or 'posts' in str(table).lower():
+                        details['vacancy_details'].update(table_data)
+                    elif 'date' in str(table).lower():
+                        details['important_dates'].update(table_data)
+                    elif 'salary' in str(table).lower() or 'stipend' in str(table).lower():
+                        for k, v in table_data.items():
+                            if 'salary' in k.lower() or 'stipend' in k.lower():
+                                details['salary'] = v
+                    
+                    # Extract age, fee from any table
+                    for key, value in table_data.items():
+                        key_lower = key.lower()
+                        if 'age' in key_lower and not details['age_limit']:
                             details['age_limit'] = value
-                        elif 'fee' in key:
+                        elif 'fee' in key_lower and not details['application_fee']:
                             details['application_fee'] = value
-                        elif 'vacancy' in key or 'post' in key:
-                            details['vacancy_details'] = value
-                        elif 'date' in key:
-                            details['important_dates'][cells[0].get_text(strip=True)] = value
+                
+                # Extract section-based content
+                headings = content_div.find_all(['h2', 'h3', 'h4'])
+                for heading in headings:
+                    heading_text = heading.get_text(strip=True).lower()
+                    
+                    # Get content after heading until next heading
+                    content_parts = []
+                    for sibling in heading.find_next_siblings():
+                        if sibling.name in ['h2', 'h3', 'h4']:
+                            break
+                        if sibling.name in ['p', 'ul', 'ol', 'table']:
+                            content_parts.append(sibling.get_text(separator=' ', strip=True))
+                    
+                    section_content = ' '.join(content_parts)
+                    
+                    if 'selection' in heading_text or 'exam pattern' in heading_text:
+                        details['selection_process'] = section_content[:500]
+                    elif 'how to apply' in heading_text or 'application procedure' in heading_text:
+                        details['how_to_apply'] = section_content[:500]
+                    elif 'important date' in heading_text:
+                        # Try to extract dates from this section
+                        self._extract_dates_from_text(section_content, details['important_dates'])
+                
+                # Get full description (first 2000 chars)
+                for script in content_div(["script", "style", "iframe"]):
+                    script.decompose()
+                details['full_description'] = content_div.get_text(separator='\n', strip=True)[:2000]
             
             time.sleep(Config.REQUEST_DELAY)
             return details
@@ -269,6 +309,42 @@ class FreeJobAlertScraper:
         except Exception as e:
             logger.error(f"Error parsing job details: {e}")
             return None
+    
+    def _extract_table_data(self, table) -> Dict[str, str]:
+        """Extract key-value pairs from a table."""
+        data = {}
+        rows = table.find_all('tr')
+        
+        for row in rows:
+            cells = row.find_all(['td', 'th'])
+            if len(cells) == 2:
+                key = cells[0].get_text(strip=True)
+                value = cells[1].get_text(strip=True)
+                if key and value:
+                    data[key] = value
+            elif len(cells) > 2:
+                # Multi-column table - use first cell as key, rest as value
+                key = cells[0].get_text(strip=True)
+                value = ' | '.join([c.get_text(strip=True) for c in cells[1:]])
+                if key and value:
+                    data[key] = value
+        
+        return data
+    
+    def _extract_dates_from_text(self, text: str, dates_dict: dict):
+        """Extract dates from text using patterns."""
+        # Common date patterns
+        date_patterns = [
+            (r'last date[:\s]+([\d\-/]+)', 'Last Date'),
+            (r'start date[:\s]+([\d\-/]+)', 'Start Date'),
+            (r'closing date[:\s]+([\d\-/]+)', 'Closing Date'),
+            (r'exam date[:\s]+([\d\-/]+)', 'Exam Date'),
+        ]
+        
+        for pattern, key in date_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                dates_dict[key] = match.group(1)
     
     def download_pdf(self, pdf_url: str, output_path: str) -> bool:
         """
@@ -291,7 +367,7 @@ class FreeJobAlertScraper:
             content_type = response.headers.get('content-type', '').lower()
             if 'pdf' not in content_type and not pdf_url.lower().endswith('.pdf'):
                 logger.warning(f"URL does not appear to be a PDF: {pdf_url}")
-                return False
+                # Try anyway - sometimes PDFs are served with wrong content-type
             
             # Write to file
             with open(output_path, 'wb') as f:
