@@ -10,7 +10,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
-import pickle
+import json
 
 from config import Config
 
@@ -20,6 +20,7 @@ class GoogleDriveUploader:
     """Upload files to Google Drive."""
     
     SCOPES = ['https://www.googleapis.com/auth/drive.file']
+    TOKEN_FILE = 'token.json'
     
     def __init__(self):
         """Initialize Google Drive client."""
@@ -31,15 +32,20 @@ class GoogleDriveUploader:
         creds = None
         
         # Token file stores the user's access and refresh tokens
-        if os.path.exists('token.pickle'):
-            with open('token.pickle', 'rb') as token:
-                creds = pickle.load(token)
+        if os.path.exists(self.TOKEN_FILE):
+            try:
+                creds = Credentials.from_authorized_user_file(self.TOKEN_FILE, self.SCOPES)
+                logger.info("Loaded credentials from token.json")
+            except Exception as e:
+                logger.warning(f"Error loading token.json: {e}")
+                creds = None
         
         # If there are no (valid) credentials available, let the user log in
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
+                    logger.info("Refreshed expired credentials")
                 except Exception as e:
                     logger.error(f"Error refreshing credentials: {e}")
                     creds = None
@@ -48,27 +54,41 @@ class GoogleDriveUploader:
                 # Try service account first
                 if os.path.exists(Config.GOOGLE_CREDENTIALS_PATH):
                     try:
-                        creds = service_account.Credentials.from_service_account_file(
-                            Config.GOOGLE_CREDENTIALS_PATH,
-                            scopes=self.SCOPES
-                        )
-                        logger.info("Authenticated using service account")
+                        # Check if it's a service account key
+                        with open(Config.GOOGLE_CREDENTIALS_PATH, 'r') as f:
+                            cred_data = json.load(f)
+                        
+                        if cred_data.get('type') == 'service_account':
+                            creds = service_account.Credentials.from_service_account_file(
+                                Config.GOOGLE_CREDENTIALS_PATH,
+                                scopes=self.SCOPES
+                            )
+                            logger.info("Authenticated using service account")
+                        else:
+                            # OAuth flow for user credentials
+                            flow = InstalledAppFlow.from_client_secrets_file(
+                                Config.GOOGLE_CREDENTIALS_PATH,
+                                self.SCOPES
+                            )
+                            creds = flow.run_local_server(port=0)
+                            logger.info("Authenticated using OAuth 2.0")
+                            
                     except Exception as e:
-                        logger.warning(f"Service account auth failed: {e}")
-                        # Fall back to OAuth flow
-                        flow = InstalledAppFlow.from_client_secrets_file(
-                            Config.GOOGLE_CREDENTIALS_PATH,
-                            self.SCOPES
-                        )
-                        creds = flow.run_local_server(port=0)
+                        logger.error(f"Authentication failed: {e}")
+                        raise
                 else:
                     raise FileNotFoundError(
                         f"Credentials file not found: {Config.GOOGLE_CREDENTIALS_PATH}"
                     )
             
-            # Save the credentials for the next run
-            with open('token.pickle', 'wb') as token:
-                pickle.dump(creds, token)
+            # Save the credentials for the next run (only for OAuth, not service account)
+            if creds and hasattr(creds, 'to_json'):
+                try:
+                    with open(self.TOKEN_FILE, 'w') as token:
+                        token.write(creds.to_json())
+                    logger.info("Saved credentials to token.json")
+                except Exception as e:
+                    logger.warning(f"Could not save token: {e}")
         
         try:
             self.service = build('drive', 'v3', credentials=creds)
