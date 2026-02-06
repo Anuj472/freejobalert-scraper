@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional
 from supabase import create_client, Client
 from datetime import datetime
+import re
 
 from config import Config
 
@@ -23,6 +24,38 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")
             raise
+    
+    def _parse_date(self, date_str: str) -> Optional[str]:
+        """Convert date from DD-MM-YYYY or DD/MM/YYYY to YYYY-MM-DD."""
+        if not date_str or date_str.strip() == '':
+            return None
+        
+        try:
+            # Try DD-MM-YYYY format
+            if '-' in date_str:
+                parts = date_str.strip().split('-')
+                if len(parts) == 3:
+                    day, month, year = parts
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            
+            # Try DD/MM/YYYY format
+            elif '/' in date_str:
+                parts = date_str.strip().split('/')
+                if len(parts) == 3:
+                    day, month, year = parts
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            
+            # Try YYYY-MM-DD (already correct)
+            elif re.match(r'^\d{4}-\d{2}-\d{2}$', date_str.strip()):
+                return date_str.strip()
+            
+            # If all else fails, return None
+            logger.warning(f"Could not parse date: {date_str}")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error parsing date '{date_str}': {e}")
+            return None
     
     def job_exists(self, job_url: str) -> bool:
         """Check if a job already exists in the database by job_url."""
@@ -46,20 +79,28 @@ class SupabaseClient:
                 logger.info(f"Job already exists: {job_data.get('title')}")
                 return None
             
+            # Parse dates to proper format
+            post_date = self._parse_date(job_data.get('post_date'))
+            last_date = self._parse_date(job_data.get('last_date'))
+            
             # Only use columns that exist in your current schema
             insert_data = {
                 'title': job_data.get('title'),
                 'organization': job_data.get('organization'),
-                'post_date': job_data.get('post_date'),
-                'last_date': job_data.get('last_date'),
                 'qualification': job_data.get('qualification'),
                 'job_url': job_url,
                 'category': job_data.get('category'),
                 
-                # PDF and website URLs - use whatever column names you have
+                # PDF and website URLs
                 'pdf_url': job_data.get('official_notification_pdf') or job_data.get('pdf_url'),
                 'gdrive_link': job_data.get('pdf_link') or job_data.get('gdrive_link'),
             }
+            
+            # Add dates only if successfully parsed
+            if post_date:
+                insert_data['post_date'] = post_date
+            if last_date:
+                insert_data['last_date'] = last_date
             
             # Try to add location if column exists
             if job_data.get('location'):
@@ -76,9 +117,8 @@ class SupabaseClient:
             
             if result.data:
                 logger.info(f"Successfully inserted job: {job_data.get('title')}")
-                logger.info(f"  - Job URL: {job_url}")
                 if insert_data.get('pdf_url'):
-                    logger.info(f"  - PDF URL: {insert_data['pdf_url']}")
+                    logger.info(f"  - PDF URL: {insert_data['pdf_url'][:80]}...")
                 return result.data[0]
             else:
                 logger.warning(f"No data returned after inserting: {job_data.get('title')}")
@@ -86,7 +126,6 @@ class SupabaseClient:
                 
         except Exception as e:
             logger.error(f"Error inserting job {job_data.get('title')}: {e}")
-            logger.debug(f"Job data keys: {list(job_data.keys())}")
             return None
     
     def update_job(self, job_url: str, update_data: Dict) -> Optional[Dict]:
