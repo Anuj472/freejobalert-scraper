@@ -114,9 +114,18 @@ class FreeJobAlertScraper:
         tables = soup.find_all('table')
         
         for table in tables:
-            # Skip if table doesn't have proper headers
+            # Check if this is a job listing table by looking at headers
             thead = table.find('thead')
             if not thead:
+                continue
+            
+            # Get header text to verify it's a job table
+            headers = [th.get_text(strip=True).lower() for th in thead.find_all('th')]
+            
+            # Job tables should have headers like: post date, recruitment board, exam/post name, etc.
+            # Skip if headers don't match job table pattern
+            if not any(keyword in ' '.join(headers) for keyword in ['post date', 'recruitment', 'exam', 'last date']):
+                logger.debug(f"Skipping table with headers: {headers}")
                 continue
             
             # Get table body
@@ -127,16 +136,49 @@ class FreeJobAlertScraper:
             # Extract rows
             rows = tbody.find_all('tr')
             
+            logger.debug(f"Found job table with {len(rows)} rows")
+            
             for row in rows:
                 try:
                     job_data = self._extract_job_from_row(row, category)
                     if job_data:
-                        jobs.append(job_data)
+                        # Validate that this is a real job, not a navigation element
+                        if self._is_valid_job(job_data):
+                            jobs.append(job_data)
+                        else:
+                            logger.debug(f"Filtered out non-job entry: {job_data.get('title')}")
                 except Exception as e:
                     logger.warning(f"Error extracting job from row: {e}")
                     continue
         
         return jobs
+    
+    def _is_valid_job(self, job_data: dict) -> bool:
+        """Validate if the extracted data is actually a job posting."""
+        title = job_data.get('title', '').lower()
+        url = job_data.get('details_url', '').lower()
+        
+        # Filter out navigation/promotional items
+        invalid_keywords = [
+            'download', 'mobile app', 'sarkari result', 'eligibility',
+            'latest notifications', 'get details', 'click here',
+            'play.google.com', 'notification', 'result'
+        ]
+        
+        # Check if title contains invalid keywords
+        for keyword in invalid_keywords:
+            if keyword in title:
+                return False
+        
+        # Check if URL points to actual job article
+        if '/articles/' not in url:
+            return False
+        
+        # Valid job should have organization name
+        if not job_data.get('organization') or len(job_data.get('organization', '')) < 3:
+            return False
+        
+        return True
     
     def _extract_job_from_row(self, row, category: str) -> Optional[dict]:
         """Extract job data from a table row."""
@@ -145,11 +187,11 @@ class FreeJobAlertScraper:
         if len(cells) < 7:
             return None
         
-        # Extract "Get Details" link
+        # Extract "Get Details" link from the last cell
         more_info_cell = cells[-1]
         details_link = more_info_cell.find('a')
         
-        if not details_link or 'Get Details' not in details_link.get_text():
+        if not details_link:
             return None
         
         details_url = details_link.get('href', '')
@@ -160,7 +202,7 @@ class FreeJobAlertScraper:
         if not details_url.startswith('http'):
             details_url = urljoin(self.BASE_URL, details_url)
         
-        # Extract basic info from table
+        # Extract basic info from table cells
         post_date = cells[0].get_text(strip=True)
         recruitment_board = cells[1].get_text(strip=True)
         exam_post_name = cells[2].get_text(strip=True)
