@@ -7,9 +7,9 @@ selenium==4.16.0
 # HTTP and Browser Automation
 webdriver-manager==4.0.1
 
-# Database
-supabase==2.3.0
-postgrest-py==0.13.0
+# Database - Updated to compatible versions
+supabase==2.3.4
+postgrest-py==0.10.6
 
 # Google Drive
 google-auth==2.27.0
