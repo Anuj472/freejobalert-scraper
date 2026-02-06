@@ -31,16 +31,20 @@ class Config:
     # Main page URLs
     VIEW_ALL_URL = f'{BASE_URL}/view-all/'
     
-    # Categories (sections on the page)
+    # Categories (URL slugs)
     CATEGORIES = [
-        'Banks',
-        'Other Govt Finance',
-        'UPSC',
-        'SSC',
-        'Other All India',
-        'All India Fellow',
-        'Defence',
-        'Railways',
+        'latest-notifications',
+        'government-jobs',
+        'bank-jobs',
+        'railway-jobs',
+        'teaching-jobs',
+        'police-jobs',
+        'engineering-jobs',
+        'it-software-jobs',
+        'defence-jobs',
+        'medical-jobs',
+        'law-jobs',
+        'private-jobs'
     ]
     
     # Pagination
@@ -66,12 +70,11 @@ class Config:
         
         # Google Drive is optional for testing
         if not Config.GOOGLE_DRIVE_FOLDER_ID:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.warning('GOOGLE_DRIVE_FOLDER_ID is not set - PDF upload will be skipped')
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
         
         return True
-
-import logging
-logger = logging.getLogger(__name__)
