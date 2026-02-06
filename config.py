@@ -24,23 +24,28 @@ class Config:
     )
     
     # Request settings
-    REQUEST_DELAY = int(os.getenv('SCRAPER_DELAY', 2))  # Seconds between requests
+    REQUEST_DELAY = int(os.getenv('SCRAPER_DELAY', 3))  # Increased to 3 seconds
     MAX_RETRIES = int(os.getenv('SCRAPER_MAX_RETRIES', 3))
     REQUEST_TIMEOUT = int(os.getenv('SCRAPER_TIMEOUT', 30))
     
-    # Categories to scrape
+    # Main page URLs
+    VIEW_ALL_URL = f'{BASE_URL}/view-all/'
+    
+    # Categories (sections on the page)
     CATEGORIES = [
-        'latest-notifications',
-        'government-jobs',
-        'bank-jobs',
-        'railway-jobs',
-        'teaching-jobs',
-        'police-jobs',
-        'engineering-jobs'
+        'Banks',
+        'Other Govt Finance',
+        'UPSC',
+        'SSC',
+        'Other All India',
+        'All India Fellow',
+        'Defence',
+        'Railways',
     ]
     
     # Pagination
-    MAX_PAGES_PER_CATEGORY = 5
+    MAX_PAGES_PER_CATEGORY = 1
+    MAX_JOBS_PER_RUN = 50  # Limit jobs per run to avoid overload
     
     # File storage
     PDF_DOWNLOAD_DIR = 'pdfs'
@@ -58,10 +63,15 @@ class Config:
             errors.append('SUPABASE_URL is not set')
         if not Config.SUPABASE_KEY:
             errors.append('SUPABASE_KEY is not set')
+        
+        # Google Drive is optional for testing
         if not Config.GOOGLE_DRIVE_FOLDER_ID:
-            errors.append('GOOGLE_DRIVE_FOLDER_ID is not set')
+            logger.warning('GOOGLE_DRIVE_FOLDER_ID is not set - PDF upload will be skipped')
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
         
         return True
+
+import logging
+logger = logging.getLogger(__name__)

@@ -50,182 +50,224 @@ class FreeJobAlertScraper:
                     logger.error(f"Failed to fetch {url} after {retries} attempts")
                     return None
     
-    def scrape_category(self, category: str, max_pages: int = Config.MAX_PAGES_PER_CATEGORY) -> List[Dict]:
-        """Scrape jobs from a specific category."""
-        jobs = []
+    def scrape_listing_page(self, url: str) -> List[Dict]:
+        """Scrape jobs from a listing page with tables."""
+        logger.info(f"Scraping listing page: {url}")
+        html = self.get_page(url)
         
-        for page in range(1, max_pages + 1):
-            if page == 1:
-                url = f"{self.base_url}/{category}/"
-            else:
-                url = f"{self.base_url}/{category}/page/{page}/"
-            
-            logger.info(f"Scraping {category} page {page}: {url}")
-            html = self.get_page(url)
-            
-            if not html:
-                logger.warning(f"No content received for {url}")
-                break
-            
-            page_jobs = self.parse_job_listings(html, category)
-            
-            if not page_jobs:
-                logger.info(f"No more jobs found on page {page} of {category}")
-                break
-            
-            jobs.extend(page_jobs)
-            logger.info(f"Found {len(page_jobs)} jobs on page {page}")
-            
-            # Respectful delay between requests
-            time.sleep(Config.REQUEST_DELAY)
+        if not html:
+            return []
         
-        logger.info(f"Total jobs scraped from {category}: {len(jobs)}")
-        return jobs
-    
-    def parse_job_listings(self, html: str, category: str) -> List[Dict]:
-        """Parse job listings from HTML."""
         soup = BeautifulSoup(html, 'lxml')
         jobs = []
         
-        # Find job listing containers - adjust selectors based on actual site structure
-        # This is a generic approach - you may need to inspect and adjust
-        job_cards = soup.find_all(['article', 'div'], class_=re.compile(r'post|job|item|card'))
+        # Find all tables containing job listings
+        tables = soup.find_all('table')
         
-        for card in job_cards:
+        for table in tables:
+            # Check if this is a job listing table (has specific headers)
+            headers = table.find_all('th')
+            if not headers:
+                continue
+            
+            header_text = ' '.join([h.get_text(strip=True) for h in headers]).lower()
+            
+            # Look for tables with job-related headers
+            if 'post date' in header_text or 'recruitment' in header_text or 'last date' in header_text:
+                jobs.extend(self.parse_job_table(table))
+        
+        logger.info(f"Found {len(jobs)} jobs on page")
+        return jobs
+    
+    def parse_job_table(self, table) -> List[Dict]:
+        """Parse individual job table."""
+        jobs = []
+        rows = table.find_all('tr')
+        
+        # Skip header row
+        for row in rows[1:]:
+            cells = row.find_all('td')
+            
+            if len(cells) < 5:  # Need at least basic info
+                continue
+            
             try:
-                job_data = self.extract_job_data(card, category)
+                job_data = self.extract_from_table_row(cells)
                 if job_data:
                     jobs.append(job_data)
             except Exception as e:
-                logger.error(f"Error parsing job card: {e}")
+                logger.error(f"Error parsing table row: {e}")
                 continue
         
         return jobs
     
-    def extract_job_data(self, card, category: str) -> Optional[Dict]:
-        """Extract job data from a job card element."""
+    def extract_from_table_row(self, cells) -> Optional[Dict]:
+        """Extract job data from table row cells."""
         try:
-            # Find job title and URL
-            title_elem = card.find(['h2', 'h3', 'h4', 'a'], class_=re.compile(r'title|heading'))
-            if not title_elem:
-                title_elem = card.find('a')
+            # Typical structure: Post Date | Recruitment Board | Exam/Post Name | Qualification | Advt No | Last Date | More Information
             
-            if not title_elem:
-                return None
+            post_date = cells[0].get_text(strip=True) if len(cells) > 0 else None
+            organization = cells[1].get_text(strip=True) if len(cells) > 1 else None
+            title = cells[2].get_text(strip=True) if len(cells) > 2 else None
+            qualification = cells[3].get_text(strip=True) if len(cells) > 3 else None
+            advt_no = cells[4].get_text(strip=True) if len(cells) > 4 else None
+            last_date = cells[5].get_text(strip=True) if len(cells) > 5 else None
             
-            # Get the link
-            link = title_elem.get('href') if title_elem.name == 'a' else None
-            if not link:
-                link_elem = card.find('a')
-                link = link_elem.get('href') if link_elem else None
+            # Find "Get Details" link
+            detail_link = None
+            if len(cells) > 6:
+                link_elem = cells[6].find('a')
+                if link_elem:
+                    detail_link = link_elem.get('href')
             
-            if not link:
+            # If no detail link found in last cell, search all cells
+            if not detail_link:
+                for cell in cells:
+                    link = cell.find('a')
+                    if link and link.get('href'):
+                        detail_link = link.get('href')
+                        break
+            
+            if not detail_link or not title:
                 return None
             
             # Make absolute URL
-            job_url = urljoin(self.base_url, link)
-            
-            # Get title text
-            title = title_elem.get_text(strip=True)
-            
-            # Try to extract additional details
-            details_text = card.get_text()
-            
-            # Extract organization (common patterns)
-            organization = self.extract_organization(details_text)
-            
-            # Extract dates
-            post_date = self.extract_date(details_text, 'post')
-            last_date = self.extract_date(details_text, 'last')
-            
-            # Extract vacancies
-            vacancies = self.extract_vacancies(details_text)
-            
-            # Find PDF link
-            pdf_url = self.find_pdf_link(card)
+            job_url = urljoin(self.base_url, detail_link)
             
             job_data = {
                 'title': title,
                 'organization': organization,
-                'post_date': post_date,
-                'last_date': last_date,
-                'vacancies': vacancies,
+                'post_date': self.parse_date(post_date),
+                'last_date': self.parse_date(last_date),
+                'qualification': qualification,
+                'advt_no': advt_no,
                 'job_url': job_url,
-                'pdf_url': pdf_url,
-                'category': category,
+                'pdf_url': None,  # Will be extracted from detail page
+                'official_website': None,  # Will be extracted from detail page
             }
             
             return job_data
             
         except Exception as e:
-            logger.error(f"Error extracting job data: {e}")
+            logger.error(f"Error extracting from table row: {e}")
             return None
     
-    def extract_organization(self, text: str) -> Optional[str]:
-        """Extract organization name from text."""
-        # Common patterns for organization names
+    def scrape_detail_page(self, job_data: Dict) -> Dict:
+        """Scrape additional details from job detail page."""
+        logger.info(f"Scraping details for: {job_data['title']}")
+        
+        html = self.get_page(job_data['job_url'])
+        if not html:
+            return job_data
+        
+        soup = BeautifulSoup(html, 'lxml')
+        
+        # Extract PDF notification link
+        pdf_link = self.find_pdf_notification(soup)
+        if pdf_link:
+            job_data['pdf_url'] = urljoin(self.base_url, pdf_link)
+            logger.info(f"Found PDF: {job_data['pdf_url']}")
+        
+        # Extract official website link
+        official_site = self.find_official_website(soup)
+        if official_site:
+            job_data['official_website'] = official_site
+            logger.info(f"Found official website: {official_site}")
+        
+        # Extract additional details from the page
+        job_data.update(self.extract_additional_details(soup))
+        
+        return job_data
+    
+    def find_pdf_notification(self, soup) -> Optional[str]:
+        """Find Official Notification PDF link."""
+        # Look for links with text like "Official Notification", "Notification PDF", "Click here" near PDF
         patterns = [
-            r'(?:in|by|at)\s+([A-Z][A-Za-z\s&]+(?:Ltd|Limited|Corporation|Corp|Inc|Bank|Railway|Police|Commission))',
-            r'([A-Z][A-Za-z\s&]+(?:Ltd|Limited|Corporation|Corp|Inc|Bank|Railway|Police|Commission))'
+            r'official\s+notification',
+            r'notification\s+pdf',
+            r'download\s+notification',
+            r'advertisement',
         ]
         
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                return match.group(1).strip()
+        # Find all links
+        links = soup.find_all('a', href=True)
+        
+        for link in links:
+            link_text = link.get_text(strip=True).lower()
+            href = link.get('href', '')
+            
+            # Check if link text matches patterns
+            for pattern in patterns:
+                if re.search(pattern, link_text, re.IGNORECASE):
+                    # Check if it's a PDF link or leads to PDF
+                    if '.pdf' in href.lower() or 'pdf' in link_text:
+                        return href
+            
+            # Also check for direct PDF links
+            if href.endswith('.pdf'):
+                return href
         
         return None
     
-    def extract_date(self, text: str, date_type: str = 'post') -> Optional[str]:
-        """Extract dates from text."""
-        # Common date patterns
-        date_patterns = [
-            r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
-            r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})',
-        ]
-        
-        for pattern in date_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                # Return first or last date based on type
-                return matches[0] if date_type == 'post' else matches[-1]
-        
-        return None
-    
-    def extract_vacancies(self, text: str) -> Optional[int]:
-        """Extract number of vacancies from text."""
+    def find_official_website(self, soup) -> Optional[str]:
+        """Find Official Website link."""
         patterns = [
-            r'(\d+)\s+(?:vacancies|vacancy|posts|post|positions|opening)',
-            r'(?:vacancies|vacancy|posts|post|positions|opening)[:\s]+(\d+)'
+            r'official\s+website',
+            r'apply\s+online',
+            r'registration',
         ]
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                try:
-                    return int(match.group(1))
-                except ValueError:
-                    pass
+        links = soup.find_all('a', href=True)
+        
+        for link in links:
+            link_text = link.get_text(strip=True).lower()
+            href = link.get('href', '')
+            
+            for pattern in patterns:
+                if re.search(pattern, link_text, re.IGNORECASE):
+                    # Exclude PDF links
+                    if not href.endswith('.pdf'):
+                        return href
         
         return None
     
-    def find_pdf_link(self, card) -> Optional[str]:
-        """Find PDF download link in the card."""
-        # Look for PDF links
-        pdf_links = card.find_all('a', href=re.compile(r'\.pdf$', re.IGNORECASE))
+    def extract_additional_details(self, soup) -> Dict:
+        """Extract additional job details from detail page."""
+        details = {}
         
-        if pdf_links:
-            return urljoin(self.base_url, pdf_links[0].get('href'))
+        # Extract vacancies
+        text = soup.get_text()
+        vacancies_match = re.search(r'(\d+)\s+(?:vacancies|posts|vacancy|post)', text, re.IGNORECASE)
+        if vacancies_match:
+            try:
+                details['vacancies'] = int(vacancies_match.group(1))
+            except ValueError:
+                pass
         
-        # Look for notification/advertisement links
-        notification_links = card.find_all('a', string=re.compile(r'notification|advertisement|download', re.IGNORECASE))
+        # Extract location (common patterns)
+        location_match = re.search(r'location[:\s]+([A-Za-z\s,]+?)(?:\n|\.|,)', text, re.IGNORECASE)
+        if location_match:
+            details['location'] = location_match.group(1).strip()
         
-        if notification_links:
-            href = notification_links[0].get('href')
-            if href:
-                return urljoin(self.base_url, href)
+        return details
+    
+    def parse_date(self, date_str: str) -> Optional[str]:
+        """Parse date string to standard format."""
+        if not date_str or date_str.strip() in ['', '–', '-']:
+            return None
         
-        return None
+        try:
+            # Try DD/MM/YYYY format
+            if re.match(r'\d{2}/\d{2}/\d{4}', date_str):
+                return date_str
+            
+            # Try DD-MM-YYYY format
+            if re.match(r'\d{2}-\d{2}-\d{4}', date_str):
+                return date_str.replace('-', '/')
+            
+            return date_str
+        except:
+            return None
     
     def download_pdf(self, pdf_url: str, job_title: str) -> Optional[str]:
         """Download PDF file."""
@@ -235,12 +277,19 @@ class FreeJobAlertScraper:
         try:
             # Create safe filename
             safe_title = re.sub(r'[^\w\s-]', '', job_title)[:50]
+            safe_title = re.sub(r'[-\s]+', '_', safe_title)
             filename = f"{safe_title}_{int(time.time())}.pdf"
             filepath = os.path.join(Config.PDF_DOWNLOAD_DIR, filename)
             
             logger.info(f"Downloading PDF from {pdf_url}")
             response = self.session.get(pdf_url, timeout=Config.REQUEST_TIMEOUT, stream=True)
             response.raise_for_status()
+            
+            # Check if response is actually a PDF
+            content_type = response.headers.get('content-type', '').lower()
+            if 'pdf' not in content_type and not pdf_url.endswith('.pdf'):
+                logger.warning(f"URL doesn't seem to be a PDF: {pdf_url}")
+                return None
             
             with open(filepath, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -253,20 +302,41 @@ class FreeJobAlertScraper:
             logger.error(f"Failed to download PDF from {pdf_url}: {e}")
             return None
     
-    def scrape_all_categories(self, categories: List[str] = None, max_pages: int = Config.MAX_PAGES_PER_CATEGORY) -> List[Dict]:
-        """Scrape all specified categories."""
-        if categories is None:
-            categories = Config.CATEGORIES
+    def scrape_category(self, category: str, max_pages: int = 1) -> List[Dict]:
+        """Scrape jobs from the view-all page of a category."""
+        # The view-all URL structure
+        url = f"{self.base_url}/view-all/"
         
-        all_jobs = []
+        logger.info(f"Scraping view-all page: {url}")
         
-        for category in categories:
-            logger.info(f"Starting scrape for category: {category}")
-            jobs = self.scrape_category(category, max_pages)
-            all_jobs.extend(jobs)
-            
-            # Delay between categories
-            time.sleep(Config.REQUEST_DELAY * 2)
+        # Get all jobs from the view-all page
+        jobs = self.scrape_listing_page(url)
+        
+        # Now fetch details for each job
+        detailed_jobs = []
+        for i, job in enumerate(jobs[:50]):  # Limit to first 50 jobs for testing
+            try:
+                logger.info(f"Processing job {i+1}/{min(len(jobs), 50)}: {job['title']}")
+                detailed_job = self.scrape_detail_page(job)
+                detailed_job['category'] = category
+                detailed_jobs.append(detailed_job)
+                
+                # Respectful delay
+                time.sleep(Config.REQUEST_DELAY)
+                
+            except Exception as e:
+                logger.error(f"Error processing job {job.get('title')}: {e}")
+                continue
+        
+        logger.info(f"Scraped {len(detailed_jobs)} jobs with details")
+        return detailed_jobs
+    
+    def scrape_all_categories(self, categories: List[str] = None, max_pages: int = 1) -> List[Dict]:
+        """Scrape the main view-all page."""
+        logger.info("Starting scrape of FreeJobAlert view-all page")
+        
+        # FreeJobAlert has a main "view-all" page with all recent jobs
+        all_jobs = self.scrape_category('all', max_pages)
         
         logger.info(f"Total jobs scraped: {len(all_jobs)}")
         return all_jobs
