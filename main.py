@@ -4,7 +4,9 @@
 import sys
 import logging
 import argparse
+import os
 from typing import List
+from datetime import datetime
 
 from config import Config
 from scraper import FreeJobAlertScraper
@@ -23,50 +25,64 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def process_jobs(jobs: List[dict], supabase_client: SupabaseClient, gdrive_uploader: GoogleDriveUploader, scraper: FreeJobAlertScraper):
-    """Process scraped jobs: download PDFs, upload to Drive, save to Supabase."""
-    processed = 0
-    
-    for job in jobs:
-        try:
-            # Check if job already exists
-            if supabase_client.job_exists(job['job_url']):
-                logger.info(f"Skipping existing job: {job['title']}")
-                continue
+def process_job(
+    job: dict,
+    scraper: FreeJobAlertScraper,
+    supabase_client: SupabaseClient,
+    gdrive_uploader: GoogleDriveUploader = None
+) -> bool:
+    """Process a single job: fetch details, download PDF, upload to Drive, save to DB."""
+    try:
+        # Fetch detailed job information
+        logger.info(f"Processing: {job['title']}")
+        details = scraper.get_job_details(job['details_url'])
+        
+        if not details:
+            logger.warning(f"Could not fetch details for: {job['title']}")
+            return False
+        
+        # Merge basic info with details
+        job_data = {**job, **details}
+        
+        # Handle PDF download and Google Drive upload
+        if gdrive_uploader and job_data.get('official_notification_pdf'):
+            pdf_url = job_data['official_notification_pdf']
             
-            # Download PDF if available
-            pdf_path = None
-            gdrive_link = None
+            # Create temp filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            pdf_filename = f"{job['organization'].replace(' ', '_')}_{timestamp}.pdf"
+            pdf_path = os.path.join('temp', pdf_filename)
             
-            if job.get('pdf_url'):
-                logger.info(f"Downloading PDF for: {job['title']}")
-                pdf_path = scraper.download_pdf(job['pdf_url'], job['title'])
+            # Ensure temp directory exists
+            os.makedirs('temp', exist_ok=True)
+            
+            # Download PDF
+            logger.info(f"Downloading PDF from: {pdf_url}")
+            if scraper.download_pdf(pdf_url, pdf_path):
+                # Upload to Google Drive
+                logger.info(f"Uploading PDF to Google Drive")
+                gdrive_link = gdrive_uploader.upload_pdf_and_get_link(pdf_path)
                 
-                if pdf_path:
-                    # Upload to Google Drive
-                    logger.info(f"Uploading PDF to Google Drive: {job['title']}")
-                    gdrive_link = gdrive_uploader.upload_pdf_and_get_link(pdf_path)
-                    
-                    if gdrive_link:
-                        job['gdrive_link'] = gdrive_link
-                        logger.info(f"PDF uploaded successfully: {gdrive_link}")
-                    else:
-                        logger.warning(f"Failed to upload PDF to Google Drive: {job['title']}")
-                else:
-                    logger.warning(f"Failed to download PDF: {job['title']}")
-            
-            # Insert job into Supabase
-            result = supabase_client.insert_job(job)
-            
-            if result:
-                processed += 1
-                logger.info(f"Successfully processed job: {job['title']}")
-            
-        except Exception as e:
-            logger.error(f"Error processing job {job.get('title')}: {e}")
-            continue
-    
-    return processed
+                if gdrive_link:
+                    job_data['pdf_link'] = gdrive_link
+                    logger.info(f"PDF uploaded: {gdrive_link}")
+                
+                # Clean up temp file
+                try:
+                    os.remove(pdf_path)
+                except:
+                    pass
+        
+        # Insert into Supabase
+        if supabase_client.insert_job(job_data):
+            logger.info(f"Successfully saved: {job['title']}")
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error processing job {job.get('title')}: {e}")
+        return False
 
 def main():
     """Main execution function."""
@@ -74,7 +90,7 @@ def main():
     parser.add_argument(
         '--category',
         type=str,
-        help='Specific category to scrape (e.g., government-jobs)'
+        help='Specific category to scrape (e.g., latest-notifications)'
     )
     parser.add_argument(
         '--max-pages',
@@ -109,25 +125,44 @@ def main():
         
         logger.info(f"Starting scrape for categories: {categories}")
         
-        # Scrape jobs
-        jobs = scraper.scrape_all_categories(categories, args.max_pages)
+        # Scrape jobs from all categories
+        all_jobs = []
+        for category in categories:
+            try:
+                jobs = scraper.scrape_category(category, args.max_pages)
+                all_jobs.extend(jobs)
+            except Exception as e:
+                logger.error(f"Error scraping category {category}: {e}")
+                continue
         
-        if not jobs:
+        logger.info(f"Total jobs scraped: {len(all_jobs)}")
+        
+        if not all_jobs:
             logger.warning("No jobs found")
             return
         
-        logger.info(f"Found {len(jobs)} jobs. Processing...")
+        logger.info(f"Found {len(all_jobs)} jobs. Processing...")
         
-        # Process jobs
-        if gdrive_uploader:
-            processed = process_jobs(jobs, supabase_client, gdrive_uploader, scraper)
-        else:
-            # Just insert into Supabase without PDF handling
-            processed = supabase_client.batch_insert_jobs(jobs)
+        # Process each job
+        processed = 0
+        for job in all_jobs:
+            try:
+                # Check if already exists
+                if supabase_client.job_exists(job['details_url']):
+                    logger.info(f"Job already exists: {job['title']}")
+                    continue
+                
+                # Process the job
+                if process_job(job, scraper, supabase_client, gdrive_uploader):
+                    processed += 1
+                    
+            except Exception as e:
+                logger.error(f"Error processing job: {e}")
+                continue
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Scraping complete!")
-        logger.info(f"Total jobs found: {len(jobs)}")
+        logger.info(f"Total jobs found: {len(all_jobs)}")
         logger.info(f"Jobs processed: {processed}")
         logger.info(f"{'='*60}\n")
         
