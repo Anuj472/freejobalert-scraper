@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  scraper:
+    build: .
+    container_name: freejobalert-scraper
+    env_file:
+      - .env
+    volumes:
+      - ./pdfs:/app/pdfs
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.pickle:/app/token.pickle
+    restart: unless-stopped
+    command: python main.py
+
+  # Optional: Run on schedule using cron
+  scraper-cron:
+    build: .
+    container_name: freejobalert-scraper-cron
+    env_file:
+      - .env
+    volumes:
+      - ./pdfs:/app/pdfs
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.pickle:/app/token.pickle
+    restart: unless-stopped
+    entrypoint: |
+      sh -c '
+      echo "0 9 * * * cd /app && python main.py >> /app/logs/cron.log 2>&1" | crontab -
+      crond -f
+      '
