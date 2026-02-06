@@ -1,6 +1,7 @@
 """Supabase database client for storing job data."""
 
 import logging
+import json
 from typing import Dict, List, Optional
 from supabase import create_client, Client
 from datetime import datetime
@@ -57,6 +58,20 @@ class SupabaseClient:
             logger.warning(f"Error parsing date '{date_str}': {e}")
             return None
     
+    def _parse_vacancies(self, vacancies_str: str) -> Optional[int]:
+        """Extract number from vacancy string like '260 Posts' or '01 Posts'."""
+        if not vacancies_str:
+            return None
+        
+        # Extract numbers from string
+        numbers = re.findall(r'\d+', str(vacancies_str))
+        if numbers:
+            try:
+                return int(numbers[0])
+            except ValueError:
+                return None
+        return None
+    
     def job_exists(self, job_url: str) -> bool:
         """Check if a job already exists in the database by job_url."""
         try:
@@ -83,34 +98,97 @@ class SupabaseClient:
             post_date = self._parse_date(job_data.get('post_date'))
             last_date = self._parse_date(job_data.get('last_date'))
             
-            # Only use columns that exist in your current schema
+            # Extract vacancies count from title or vacancy_details
+            vacancies = None
+            if job_data.get('title'):
+                vacancies = self._parse_vacancies(job_data['title'])
+            
+            # Build insert data with all schema fields
             insert_data = {
                 'title': job_data.get('title'),
                 'organization': job_data.get('organization'),
                 'qualification': job_data.get('qualification'),
                 'job_url': job_url,
                 'category': job_data.get('category'),
-                
-                # PDF and website URLs
-                'pdf_url': job_data.get('official_notification_pdf') or job_data.get('pdf_url'),
-                'gdrive_link': job_data.get('pdf_link') or job_data.get('gdrive_link'),
+                'advt_no': job_data.get('advt_no'),
             }
             
-            # Add dates only if successfully parsed
+            # Add dates
             if post_date:
                 insert_data['post_date'] = post_date
             if last_date:
                 insert_data['last_date'] = last_date
             
-            # Try to add location if column exists
+            # Add vacancies count
+            if vacancies:
+                insert_data['vacancies'] = vacancies
+            
+            # Location
             if job_data.get('location'):
                 insert_data['location'] = job_data.get('location')
+            
+            # PDF URLs - Handle FreeJobAlert PDFs specially
+            pdf_needs_upload = job_data.get('pdf_needs_upload', False)
+            official_pdf = job_data.get('official_notification_pdf')
+            
+            if official_pdf:
+                if pdf_needs_upload:
+                    # FreeJobAlert hosted PDF - don't save, will be uploaded to Drive later
+                    logger.info(f"FreeJobAlert PDF detected (will be uploaded to Drive): {official_pdf[:60]}")
+                    # Leave pdf_url empty, will be filled with Drive link later
+                else:
+                    # External PDF - save directly
+                    insert_data['pdf_url'] = official_pdf
+            
+            # Application and website URLs
+            if job_data.get('application_url'):
+                insert_data['application_url'] = job_data.get('application_url')
+            
+            if job_data.get('official_website'):
+                insert_data['official_website'] = job_data.get('official_website')
+            
+            if job_data.get('organization_url'):
+                insert_data['organization_url'] = job_data.get('organization_url')
+            
+            # Google Drive link (if already provided)
+            if job_data.get('gdrive_link'):
+                insert_data['gdrive_link'] = job_data.get('gdrive_link')
+            
+            # Text fields
+            if job_data.get('full_description'):
+                insert_data['full_description'] = job_data.get('full_description')
+            
+            if job_data.get('salary'):
+                insert_data['salary'] = job_data.get('salary')
+            
+            if job_data.get('age_limit'):
+                insert_data['age_limit'] = job_data.get('age_limit')
+            
+            if job_data.get('application_fee'):
+                insert_data['application_fee'] = job_data.get('application_fee')
+            
+            if job_data.get('selection_process'):
+                insert_data['selection_process'] = job_data.get('selection_process')
+            
+            if job_data.get('how_to_apply'):
+                insert_data['how_to_apply'] = job_data.get('how_to_apply')
+            
+            # JSON fields
+            if job_data.get('important_dates'):
+                important_dates = job_data.get('important_dates')
+                if isinstance(important_dates, dict) and important_dates:
+                    insert_data['important_dates'] = json.dumps(important_dates)
+            
+            if job_data.get('vacancy_details'):
+                vacancy_details = job_data.get('vacancy_details')
+                if isinstance(vacancy_details, dict) and vacancy_details:
+                    insert_data['vacancy_details'] = json.dumps(vacancy_details)
             
             # Remove None values
             insert_data = {k: v for k, v in insert_data.items() if v is not None}
             
             # Log what we're inserting for debugging
-            logger.debug(f"Inserting job with fields: {list(insert_data.keys())}")
+            logger.debug(f"Inserting job with {len(insert_data)} fields")
             
             # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
@@ -118,7 +196,11 @@ class SupabaseClient:
             if result.data:
                 logger.info(f"Successfully inserted job: {job_data.get('title')}")
                 if insert_data.get('pdf_url'):
-                    logger.info(f"  - PDF URL: {insert_data['pdf_url'][:80]}...")
+                    logger.info(f"  - PDF URL: {insert_data['pdf_url'][:80]}")
+                if insert_data.get('application_url'):
+                    logger.info(f"  - Apply URL: {insert_data['application_url'][:80]}")
+                if pdf_needs_upload:
+                    logger.info(f"  ⚠️ FreeJobAlert PDF needs Drive upload")
                 return result.data[0]
             else:
                 logger.warning(f"No data returned after inserting: {job_data.get('title')}")
@@ -166,12 +248,14 @@ class SupabaseClient:
         return inserted_count
     
     def get_jobs_without_gdrive_link(self, limit: int = 100) -> List[Dict]:
-        """Get jobs that don't have a Google Drive link yet."""
+        """Get jobs that don't have a Google Drive link yet but have empty pdf_url.
+        These are jobs with FreeJobAlert PDFs that need to be uploaded.
+        """
         try:
             result = self.client.table('jobs') \
                 .select('*') \
                 .is_('gdrive_link', 'null') \
-                .not_.is_('pdf_url', 'null') \
+                .is_('pdf_url', 'null') \
                 .limit(limit) \
                 .execute()
             
@@ -185,7 +269,7 @@ class SupabaseClient:
         try:
             result = self.client.table('jobs') \
                 .select('*') \
-                .order('created_at', desc=True) \
+                .order('scraped_at', desc=True) \
                 .limit(limit) \
                 .execute()
             
