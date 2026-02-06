@@ -239,6 +239,13 @@ class FreeJobAlertScraper:
             'source': 'freejobalert'
         }
     
+    def _is_freejobalert_pdf(self, url: str) -> bool:
+        """Check if PDF is hosted on FreeJobAlert domain."""
+        if not url:
+            return False
+        parsed = urlparse(url.lower())
+        return 'freejobalert.com' in parsed.netloc or 'img2.freejobalert.com' in parsed.netloc
+    
     def get_job_details(self, details_url: str) -> Optional[dict]:
         """
         Fetch detailed job information from the job details page.
@@ -263,14 +270,18 @@ class FreeJobAlertScraper:
                 'full_description': '',
                 'official_notification_pdf': '',
                 'official_website': '',
-                'application_link': '',
+                'application_url': '',  # This is the "Apply Online" link
+                'organization_url': '',
+                'pdf_url': '',  # External PDF (will be None if FreeJobAlert hosted)
+                'pdf_needs_upload': False,  # Flag if PDF needs to be uploaded to Drive
                 'important_dates': {},
                 'vacancy_details': {},
                 'salary': '',
                 'age_limit': '',
                 'application_fee': '',
                 'selection_process': '',
-                'how_to_apply': ''
+                'how_to_apply': '',
+                'location': ''
             }
             
             # Extract title from h1 or title tag
@@ -296,16 +307,49 @@ class FreeJobAlertScraper:
                     # Make absolute URL
                     absolute_url = urljoin(self.BASE_URL, href)
                     
-                    # Identify link type based on text and URL
-                    if 'notification' in link_text and ('pdf' in link_text or href.lower().endswith('.pdf')):
-                        details['official_notification_pdf'] = absolute_url
+                    # Identify link type based on parent context and text
+                    # Check parent element text for better context
+                    parent_text = ''
+                    if link.parent:
+                        parent_text = link.parent.get_text(strip=True).lower()
+                    
+                    # Official Notification PDF: Look for "official notification pdf:" pattern
+                    if ('official notification' in parent_text and 'pdf' in parent_text) or \
+                       ('notification' in link_text and 'pdf' in link_text):
+                        if href.lower().endswith('.pdf') or '.pdf' in href.lower():
+                            if self._is_freejobalert_pdf(absolute_url):
+                                # FreeJobAlert hosted PDF - needs to be uploaded
+                                details['official_notification_pdf'] = absolute_url
+                                details['pdf_needs_upload'] = True
+                                logger.info(f"Found FreeJobAlert PDF (needs upload): {absolute_url[:80]}")
+                            else:
+                                # External PDF - use directly
+                                details['official_notification_pdf'] = absolute_url
+                                details['pdf_url'] = absolute_url
+                                logger.info(f"Found external PDF: {absolute_url[:80]}")
+                    
+                    # Apply Online: Look for "apply online:" pattern
+                    elif 'apply online' in parent_text or 'apply online' in link_text:
+                        if 'click here' in link_text or 'apply' in link_text:
+                            details['application_url'] = absolute_url
+                            logger.info(f"Found application URL: {absolute_url[:80]}")
+                    
+                    # Official Website: Look for "official website:" pattern
+                    elif 'official website' in parent_text or 'official website' in link_text:
+                        if 'click here' in link_text:
+                            details['official_website'] = absolute_url
+                            details['organization_url'] = absolute_url
+                            logger.info(f"Found official website: {absolute_url[:80]}")
+                    
+                    # Fallback: Any PDF link without specific context
                     elif href.lower().endswith('.pdf') and 'click here' in link_text:
                         if not details['official_notification_pdf']:
-                            details['official_notification_pdf'] = absolute_url
-                    elif 'official website' in link_text:
-                        details['official_website'] = absolute_url
-                    elif 'apply online' in link_text or 'application' in link_text:
-                        details['application_link'] = absolute_url
+                            if self._is_freejobalert_pdf(absolute_url):
+                                details['official_notification_pdf'] = absolute_url
+                                details['pdf_needs_upload'] = True
+                            else:
+                                details['official_notification_pdf'] = absolute_url
+                                details['pdf_url'] = absolute_url
                 
                 # Extract structured data from tables
                 tables = content_div.find_all('table')
@@ -314,22 +358,24 @@ class FreeJobAlertScraper:
                     
                     # Identify table purpose by headers or content
                     table_str = str(table).lower()
-                    if 'vacancy' in table_str or 'posts' in table_str:
+                    if 'vacancy' in table_str or 'posts' in table_str or 'post name' in table_str:
                         details['vacancy_details'].update(table_data)
-                    elif 'date' in table_str:
+                    elif 'date' in table_str or 'important' in table_str:
                         details['important_dates'].update(table_data)
-                    elif 'salary' in table_str or 'stipend' in table_str:
+                    elif 'salary' in table_str or 'stipend' in table_str or 'pay scale' in table_str:
                         for k, v in table_data.items():
-                            if 'salary' in k.lower() or 'stipend' in k.lower():
+                            if 'salary' in k.lower() or 'stipend' in k.lower() or 'pay' in k.lower():
                                 details['salary'] = v
                     
-                    # Extract age, fee from any table
+                    # Extract specific fields from any table
                     for key, value in table_data.items():
                         key_lower = key.lower()
                         if 'age' in key_lower and not details['age_limit']:
                             details['age_limit'] = value
                         elif 'fee' in key_lower and not details['application_fee']:
                             details['application_fee'] = value
+                        elif 'location' in key_lower and not details['location']:
+                            details['location'] = value
                 
                 # Extract section-based content
                 headings = content_div.find_all(['h2', 'h3', 'h4'])
@@ -352,6 +398,8 @@ class FreeJobAlertScraper:
                         details['how_to_apply'] = section_content[:500]
                     elif 'important date' in heading_text:
                         self._extract_dates_from_text(section_content, details['important_dates'])
+                    elif 'salary' in heading_text and not details['salary']:
+                        details['salary'] = section_content[:200]
                 
                 # Get full description (first 2000 chars)
                 for script in content_div(["script", "style", "iframe"]):
