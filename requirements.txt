@@ -3,9 +3,8 @@ requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.1.0
 
-# Database - Compatible versions that work together
+# Database - Let supabase manage its own dependencies
 supabase==2.0.3
-httpx==0.23.3
 
 # Google Drive
 google-auth==2.27.0
