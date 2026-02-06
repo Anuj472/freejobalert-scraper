@@ -2,14 +2,10 @@
 requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.1.0
-selenium==4.16.0
 
-# HTTP and Browser Automation
-webdriver-manager==4.0.1
-
-# Database - Updated to compatible versions
-supabase==2.3.4
-postgrest-py==0.10.6
+# Database - Compatible versions that work together
+supabase==2.0.3
+httpx==0.23.3
 
 # Google Drive
 google-auth==2.27.0
