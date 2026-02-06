@@ -21,10 +21,23 @@ class SupabaseClient:
                 Config.SUPABASE_URL,
                 Config.SUPABASE_KEY
             )
+            self._check_freejobalert_url_column()
             logger.info("Supabase client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}")
             raise
+    
+    def _check_freejobalert_url_column(self):
+        """Check if freejobalert_url column exists in jobs table."""
+        try:
+            # Try to query with freejobalert_url field
+            self.client.table('jobs').select('freejobalert_url').limit(1).execute()
+            self.has_fja_url_column = True
+            logger.info("✓ freejobalert_url column exists")
+        except Exception as e:
+            self.has_fja_url_column = False
+            logger.warning("⚠️  freejobalert_url column not found - run MIGRATION_ADD_FJA_URL.sql to add it")
+            logger.info("   Deduplication will use job_url field (less reliable)")
     
     def _parse_date(self, date_str: str) -> Optional[str]:
         """Convert date from DD-MM-YYYY or DD/MM/YYYY to YYYY-MM-DD."""
@@ -82,15 +95,16 @@ class SupabaseClient:
         """Check if a job already exists by FreeJobAlert source URL."""
         try:
             # Try to check by freejobalert_url field (if column exists)
-            try:
-                result = self.client.table('jobs').select('id').eq('freejobalert_url', fja_url).execute()
-                if len(result.data) > 0:
-                    return True
-            except Exception:
-                # Column might not exist yet, ignore
-                pass
+            if self.has_fja_url_column:
+                try:
+                    result = self.client.table('jobs').select('id').eq('freejobalert_url', fja_url).execute()
+                    if len(result.data) > 0:
+                        return True
+                except Exception:
+                    # Column check failed, skip
+                    pass
             
-            # Fallback: check by job_url if it's a FreeJobAlert URL (old records)
+            # Fallback: check by job_url if it's a FreeJobAlert URL (old records or no fja_url column)
             if self._is_freejobalert_url(fja_url):
                 result = self.client.table('jobs').select('id').eq('job_url', fja_url).execute()
                 return len(result.data) > 0
@@ -148,12 +162,9 @@ class SupabaseClient:
                 insert_data['job_url'] = fja_url
                 logger.warning(f"No organization URL found, using FreeJobAlert URL: {fja_url[:80]}")
             
-            # Store FreeJobAlert source URL for tracking (if column exists)
-            try:
+            # Store FreeJobAlert source URL for tracking (ONLY if column exists)
+            if self.has_fja_url_column:
                 insert_data['freejobalert_url'] = fja_url
-            except Exception:
-                # Column might not exist, that's okay
-                pass
             
             # Add dates
             if post_date:
@@ -232,7 +243,8 @@ class SupabaseClient:
             # Log what we're inserting for debugging
             logger.debug(f"Inserting job with {len(insert_data)} fields")
             logger.info(f"Job URL (organization): {insert_data.get('job_url', 'N/A')[:80]}")
-            logger.info(f"Source URL (FreeJobAlert): {fja_url[:80]}")
+            if self.has_fja_url_column:
+                logger.info(f"Source URL (FreeJobAlert): {fja_url[:80]}")
             
             # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
@@ -264,7 +276,7 @@ class SupabaseClient:
             by_fja_url: If True, search by freejobalert_url field, else by job_url
         """
         try:
-            if by_fja_url:
+            if by_fja_url and self.has_fja_url_column:
                 result = self.client.table('jobs').update(update_data).eq('freejobalert_url', job_identifier).execute()
             else:
                 result = self.client.table('jobs').update(update_data).eq('job_url', job_identifier).execute()
