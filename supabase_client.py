@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional
 from supabase import create_client, Client
 from datetime import datetime
+import json
 
 from config import Config
 
@@ -25,7 +26,7 @@ class SupabaseClient:
             raise
     
     def job_exists(self, job_url: str) -> bool:
-        """Check if a job already exists in the database."""
+        """Check if a job already exists in the database by job_url."""
         try:
             result = self.client.table('jobs').select('id').eq('job_url', job_url).execute()
             return len(result.data) > 0
@@ -37,39 +38,65 @@ class SupabaseClient:
         """Insert a new job into the database."""
         try:
             # Check if job already exists
-            if self.job_exists(job_data['job_url']):
-                logger.info(f"Job already exists: {job_data['title']}")
+            job_url = job_data.get('job_url') or job_data.get('details_url')
+            if not job_url:
+                logger.error("Job data missing job_url")
                 return None
             
-            # Prepare data for insertion
+            if self.job_exists(job_url):
+                logger.info(f"Job already exists: {job_data.get('title')}")
+                return None
+            
+            # Prepare data for insertion - map scraper fields to database columns
             insert_data = {
                 'title': job_data.get('title'),
                 'organization': job_data.get('organization'),
                 'post_date': job_data.get('post_date'),
                 'last_date': job_data.get('last_date'),
-                'vacancies': job_data.get('vacancies'),
                 'qualification': job_data.get('qualification'),
-                'location': job_data.get('location'),
-                'job_url': job_data.get('job_url'),
-                'pdf_url': job_data.get('pdf_url'),
-                'gdrive_link': job_data.get('gdrive_link'),
+                'job_url': job_url,
                 'category': job_data.get('category'),
+                'source': job_data.get('source', 'freejobalert'),
+                
+                # Additional fields from detailed scrape
+                'pdf_url': job_data.get('official_notification_pdf') or job_data.get('pdf_url'),
+                'organization_url': job_data.get('official_website') or job_data.get('organization_url'),
+                'application_url': job_data.get('application_link') or job_data.get('application_url'),
+                'gdrive_link': job_data.get('pdf_link') or job_data.get('gdrive_link'),
+                
+                # Detailed info
+                'full_description': job_data.get('full_description'),
+                'salary': job_data.get('salary'),
+                'age_limit': job_data.get('age_limit'),
+                'application_fee': job_data.get('application_fee'),
+                'selection_process': job_data.get('selection_process'),
+                'how_to_apply': job_data.get('how_to_apply'),
+                'advt_no': job_data.get('advt_no'),
             }
+            
+            # Handle JSON fields (important_dates, vacancy_details)
+            if job_data.get('important_dates'):
+                insert_data['important_dates'] = json.dumps(job_data['important_dates'])
+            
+            if job_data.get('vacancy_details'):
+                insert_data['vacancy_details'] = json.dumps(job_data['vacancy_details'])
             
             # Remove None values
             insert_data = {k: v for k, v in insert_data.items() if v is not None}
             
+            # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
             
             if result.data:
-                logger.info(f"Successfully inserted job: {job_data['title']}")
+                logger.info(f"Successfully inserted job: {job_data.get('title')}")
                 return result.data[0]
             else:
-                logger.warning(f"No data returned after inserting: {job_data['title']}")
+                logger.warning(f"No data returned after inserting: {job_data.get('title')}")
                 return None
                 
         except Exception as e:
             logger.error(f"Error inserting job {job_data.get('title')}: {e}")
+            logger.exception(e)  # Print full traceback
             return None
     
     def update_job(self, job_url: str, update_data: Dict) -> Optional[Dict]:
