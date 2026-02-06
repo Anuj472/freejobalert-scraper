@@ -72,11 +72,26 @@ class SupabaseClient:
                 return None
         return None
     
-    def job_exists(self, job_url: str) -> bool:
-        """Check if a job already exists in the database by job_url."""
+    def _is_freejobalert_url(self, url: str) -> bool:
+        """Check if URL is from FreeJobAlert domain."""
+        if not url:
+            return False
+        return 'freejobalert.com' in url.lower()
+    
+    def job_exists(self, fja_url: str) -> bool:
+        """Check if a job already exists by FreeJobAlert source URL."""
         try:
-            result = self.client.table('jobs').select('id').eq('job_url', job_url).execute()
-            return len(result.data) > 0
+            # Check by freejobalert_url field (we'll add this)
+            result = self.client.table('jobs').select('id').eq('freejobalert_url', fja_url).execute()
+            if len(result.data) > 0:
+                return True
+            
+            # Fallback: check by job_url if it's a FreeJobAlert URL (old records)
+            if self._is_freejobalert_url(fja_url):
+                result = self.client.table('jobs').select('id').eq('job_url', fja_url).execute()
+                return len(result.data) > 0
+            
+            return False
         except Exception as e:
             logger.error(f"Error checking if job exists: {e}")
             return False
@@ -84,13 +99,17 @@ class SupabaseClient:
     def insert_job(self, job_data: Dict) -> Optional[Dict]:
         """Insert a new job into the database."""
         try:
-            # Check if job already exists
-            job_url = job_data.get('job_url') or job_data.get('details_url')
-            if not job_url:
-                logger.error("Job data missing job_url")
+            # Get URLs
+            fja_url = job_data.get('job_url') or job_data.get('details_url')  # FreeJobAlert article URL
+            application_url = job_data.get('application_url')  # Organization's application URL
+            official_website = job_data.get('official_website') or job_data.get('organization_url')
+            
+            if not fja_url:
+                logger.error("Job data missing FreeJobAlert URL")
                 return None
             
-            if self.job_exists(job_url):
+            # Check if job already exists using FreeJobAlert URL
+            if self.job_exists(fja_url):
                 logger.info(f"Job already exists: {job_data.get('title')}")
                 return None
             
@@ -108,10 +127,22 @@ class SupabaseClient:
                 'title': job_data.get('title'),
                 'organization': job_data.get('organization'),
                 'qualification': job_data.get('qualification'),
-                'job_url': job_url,
                 'category': job_data.get('category'),
                 'advt_no': job_data.get('advt_no'),
             }
+            
+            # IMPORTANT: job_url should be the organization's application URL, NOT FreeJobAlert URL
+            # Priority: application_url > official_website > fja_url (fallback)
+            if application_url:
+                insert_data['job_url'] = application_url
+                logger.info(f"Using application URL as job_url: {application_url[:80]}")
+            elif official_website:
+                insert_data['job_url'] = official_website
+                logger.info(f"Using official website as job_url: {official_website[:80]}")
+            else:
+                # Fallback to FreeJobAlert URL if no organization URL found
+                insert_data['job_url'] = fja_url
+                logger.warning(f"No organization URL found, using FreeJobAlert URL: {fja_url[:80]}")
             
             # Add dates
             if post_date:
@@ -141,14 +172,17 @@ class SupabaseClient:
                     insert_data['pdf_url'] = official_pdf
             
             # Application and website URLs
-            if job_data.get('application_url'):
-                insert_data['application_url'] = job_data.get('application_url')
+            if application_url:
+                insert_data['application_url'] = application_url
             
-            if job_data.get('official_website'):
-                insert_data['official_website'] = job_data.get('official_website')
+            if official_website:
+                insert_data['official_website'] = official_website
             
             if job_data.get('organization_url'):
                 insert_data['organization_url'] = job_data.get('organization_url')
+            
+            # Store FreeJobAlert source URL for tracking (if you add this column)
+            # insert_data['freejobalert_url'] = fja_url
             
             # Google Drive link (if already provided)
             if job_data.get('gdrive_link'):
@@ -189,6 +223,7 @@ class SupabaseClient:
             
             # Log what we're inserting for debugging
             logger.debug(f"Inserting job with {len(insert_data)} fields")
+            logger.info(f"Job URL (organization): {insert_data.get('job_url', 'N/A')[:80]}")
             
             # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
@@ -208,22 +243,32 @@ class SupabaseClient:
                 
         except Exception as e:
             logger.error(f"Error inserting job {job_data.get('title')}: {e}")
+            logger.error(f"Insert data keys: {list(insert_data.keys()) if 'insert_data' in locals() else 'N/A'}")
             return None
     
-    def update_job(self, job_url: str, update_data: Dict) -> Optional[Dict]:
-        """Update an existing job in the database."""
+    def update_job(self, job_identifier: str, update_data: Dict, by_fja_url: bool = False) -> Optional[Dict]:
+        """Update an existing job in the database.
+        
+        Args:
+            job_identifier: job_url or freejobalert_url depending on by_fja_url flag
+            update_data: Dictionary of fields to update
+            by_fja_url: If True, search by freejobalert_url field, else by job_url
+        """
         try:
-            result = self.client.table('jobs').update(update_data).eq('job_url', job_url).execute()
+            if by_fja_url:
+                result = self.client.table('jobs').update(update_data).eq('freejobalert_url', job_identifier).execute()
+            else:
+                result = self.client.table('jobs').update(update_data).eq('job_url', job_identifier).execute()
             
             if result.data:
-                logger.info(f"Successfully updated job: {job_url}")
+                logger.info(f"Successfully updated job: {job_identifier[:80]}")
                 return result.data[0]
             else:
-                logger.warning(f"No data returned after updating: {job_url}")
+                logger.warning(f"No data returned after updating: {job_identifier[:80]}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error updating job {job_url}: {e}")
+            logger.error(f"Error updating job {job_identifier}: {e}")
             return None
     
     def update_gdrive_link(self, job_url: str, gdrive_link: str) -> bool:
