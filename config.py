@@ -1,4 +1,7 @@
-"""Configuration settings for the FreeJobAlert scraper."""
+"""Configuration settings for the FreeJobAlert scraper.
+
+Updated to use robust CSS-only parser by default (no LLM required).
+"""
 
 import os
 from dotenv import load_dotenv
@@ -16,17 +19,13 @@ class Config:
     GOOGLE_CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
     GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
     
-    # LLM Configuration (Local Ollama - Private & Free)
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Better accuracy (2GB)
-    OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')  # Ollama server
+    # LLM Configuration (DISABLED BY DEFAULT - robust CSS parser is more reliable)
+    USE_LLM_FALLBACK = os.getenv('USE_LLM_FALLBACK', 'false').lower() == 'true'
     
-    # Optional: Groq API (if Ollama not available)
-    GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')  # Get from https://console.groq.com/
-    GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')  # Fallback model
-    
-    # LLM Strategy
-    USE_LLM_FALLBACK = os.getenv('USE_LLM_FALLBACK', 'true').lower() == 'true'
-    LLM_ALWAYS_ENABLED = os.getenv('LLM_ALWAYS_ENABLED', 'true').lower() == 'true'  # Use LLM for all jobs
+    # Only used if USE_LLM_FALLBACK=true
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.1:8b')
+    OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
+    LLM_ALWAYS_ENABLED = os.getenv('LLM_ALWAYS_ENABLED', 'false').lower() == 'true'
     
     # All fields to extract (matches database schema)
     ALL_EXTRACTION_FIELDS = [
@@ -40,7 +39,7 @@ class Config:
     # Critical fields (must be extracted)
     LLM_CRITICAL_FIELDS = ['title', 'organization', 'last_date', 'application_url']
     
-    # Optional threshold for fallback mode (not used if LLM_ALWAYS_ENABLED=true)
+    # Optional threshold for fallback mode
     LLM_OPTIONAL_THRESHOLD = 3
     
     # Scraper Configuration
@@ -51,7 +50,7 @@ class Config:
     )
     
     # Request settings
-    REQUEST_DELAY = int(os.getenv('SCRAPER_DELAY', 3))  # Increased to 3 seconds
+    REQUEST_DELAY = int(os.getenv('SCRAPER_DELAY', 2))  # seconds between requests
     MAX_RETRIES = int(os.getenv('SCRAPER_MAX_RETRIES', 3))
     REQUEST_TIMEOUT = int(os.getenv('SCRAPER_TIMEOUT', 30))
     
@@ -95,25 +94,19 @@ class Config:
         if not Config.SUPABASE_KEY:
             errors.append('SUPABASE_KEY is not set')
         
-        # Google Drive is optional for testing
+        # Google Drive is optional
         if not Config.GOOGLE_DRIVE_FOLDER_ID:
             import logging
             logger = logging.getLogger(__name__)
-            logger.warning('GOOGLE_DRIVE_FOLDER_ID is not set - PDF upload will be skipped')
+            logger.warning('GOOGLE_DRIVE_FOLDER_ID not set - PDF upload will be skipped')
         
-        # LLM configuration info
+        # Log parser being used
+        import logging
+        logger = logging.getLogger(__name__)
         if Config.USE_LLM_FALLBACK:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f'LLM Configuration:')
-            logger.info(f'  Primary: Ollama local ({Config.OLLAMA_MODEL})')
-            logger.info(f'  Server: {Config.OLLAMA_URL}')
-            logger.info(f'  Strategy: {"Always" if Config.LLM_ALWAYS_ENABLED else "Fallback"}')
-            logger.info(f'')
-            logger.info(f'Setup Ollama:')
-            logger.info(f'  1. Install: curl -fsSL https://ollama.com/install.sh | sh')
-            logger.info(f'  2. Pull model: ollama pull {Config.OLLAMA_MODEL}')
-            logger.info(f'  3. Start: ollama serve')
+            logger.info(f'Parser: CSS + LLM fallback ({Config.OLLAMA_MODEL})')
+        else:
+            logger.info('Parser: Robust CSS-only (no LLM required) ✓')
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
