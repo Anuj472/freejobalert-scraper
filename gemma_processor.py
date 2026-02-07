@@ -134,6 +134,7 @@ class GemmaProcessor:
         """
         IMPROVED: Extract with focused, specific questions.
         NO URL extraction - HTML parser will handle that.
+        DO NOT extract post_date - HTML parser will handle that.
         """
         
         # Truncate text to fit context
@@ -148,28 +149,65 @@ Answer these SPECIFIC questions by carefully reading the document. Return ONLY v
 
 CRITICAL RULES:
 1. DO NOT extract or include ANY URLs, links, or web addresses
-2. Vacancies MUST be INTEGER count (e.g., 100, 50, 25) NOT year (2026)
-3. Dates in DD-MM-YYYY format only
-4. Use null for fields not found in document
-5. Be precise and extract EXACT values from document
+2. DO NOT extract post_date (notification publish date) - only extract last_date (application deadline)
+3. Vacancies MUST be INTEGER count (e.g., 100, 50, 25) NOT year (2026)
+4. Dates in DD-MM-YYYY format only
+5. Use null for fields not found in document
+6. Be precise and extract EXACT values from document
 
 Questions to answer:
+
 1. What is the EXACT job title or post name?
+   Example: "Assistant Engineer", "Staff Nurse", "Clerk Grade II"
+
 2. What is the EXACT organization/department/commission name?
+   Example: "Indian Railways", "State Bank of India", "UPSC"
+
 3. How many TOTAL vacancies are there? (INTEGER count, NOT year)
+   Look for: "Total Posts", "Total Vacancies", numbers in tables
+   Example: 150 (not 2026)
+
 4. What is the advertisement/notification number?
-5. What are the important dates?
-   - When does application start? (DD-MM-YYYY)
-   - What is the last date to apply? (DD-MM-YYYY)
-   - When is exam date if mentioned? (DD-MM-YYYY)
+   Example: "Advt. No. 01/2026", "Notification No. 12345"
+
+5. What is the LAST DATE to apply? (Application deadline, NOT notification date)
+   Look for: "Last Date", "Closing Date", "Apply By"
+   Format: DD-MM-YYYY
+   Example: "15-02-2026"
+
 6. What is the salary or pay scale mentioned?
+   Example: "Rs. 25,000 - 50,000", "Level 7, Rs. 44,900"
+
 7. What is the age limit for applicants?
+   Example: "21-30 years", "18-35 years as on 01-01-2026"
+
 8. What educational qualification is required?
-9. What is the job location or posting location?
+   Example: "Bachelor's Degree in Engineering", "10th Pass", "Graduate"
+
+9. **IMPORTANT: What is the job location or posting place?**
+   Look carefully for: "Place of Posting", "Location", "Work Location", "Job Station"
+   - Check if it mentions specific cities: Delhi, Mumbai, Bangalore, etc.
+   - Check if it mentions states: Maharashtra, Karnataka, UP, etc.
+   - Check if it mentions regions: North India, South India, All India
+   - Look in vacancy tables for location columns
+   Example: "New Delhi", "Mumbai, Maharashtra", "All India", "Various locations across India"
+
 10. What is the application fee for different categories?
+    Example: {{"General/OBC": "Rs. 500", "SC/ST/PH": "Rs. 250", "Women": "Rs. 250"}}
+
 11. What is the selection process or exam pattern?
-12. How should candidates apply? (Step-by-step)
-13. Is there a post-wise vacancy breakdown?
+    Example: "Written Exam + Interview", "CBT + Physical Test"
+
+12. How should candidates apply? (Step-by-step instructions from document)
+    Example: "Apply online through official website"
+
+13. Important dates mentioned?
+    - Application start date? (DD-MM-YYYY)
+    - Application end date / Last date? (DD-MM-YYYY)
+    - Exam date if mentioned? (DD-MM-YYYY)
+
+14. Is there a post-wise vacancy breakdown in tables?
+    Example: {{"Engineer": "50", "Assistant": "100"}}
 
 Return ONLY this JSON structure:
 {{
@@ -177,19 +215,18 @@ Return ONLY this JSON structure:
     "organization": "Exact organization name",
     "vacancies": 120,
     "advt_no": "Advertisement number",
-    "post_date": "DD-MM-YYYY or null",
     "last_date": "DD-MM-YYYY",
     "salary": "Pay scale details",
     "age_limit": "Age requirement",
     "qualification": "Educational qualification",
-    "location": "Job location",
+    "location": "Job location with city/state (IMPORTANT - extract carefully)",
     "application_fee": {{"General": "Rs. X", "SC/ST": "Nil"}},
     "selection_process": "Exam/selection method",
     "how_to_apply": "Application instructions",
     "important_dates": {{
-        "Application Start": "DD-MM-YYYY",
+        "Application Start": "DD-MM-YYYY or null",
         "Application End": "DD-MM-YYYY",
-        "Exam Date": "DD-MM-YYYY"
+        "Exam Date": "DD-MM-YYYY or null"
     }},
     "vacancy_details": {{
         "Post Name 1": "Count",
@@ -199,7 +236,10 @@ Return ONLY this JSON structure:
 
 REMEMBER:
 - NO URLs or links
+- NO post_date field
 - Vacancies = INTEGER count
+- Location = MUST extract carefully (city/state/region)
+- last_date = Application deadline only
 - Dates = DD-MM-YYYY
 - null if not found
 
@@ -211,6 +251,7 @@ JSON OUTPUT:"""
         """
         IMPROVED: Extract from images with focused questions.
         NO URL extraction.
+        NO post_date extraction.
         """
         
         # Convert images to base64
@@ -227,28 +268,53 @@ Answer these SPECIFIC questions by carefully reading all images. Return ONLY val
 
 CRITICAL RULES:
 1. DO NOT extract or include ANY URLs, links, or web addresses
-2. Read tables carefully - vacancies = INTEGER count (e.g., 50, 100) NOT year (2026)
-3. Dates in DD-MM-YYYY format
-4. Use null for fields you cannot find
-5. Extract EXACT text you see
+2. DO NOT extract post_date (notification date) - only last_date (application deadline)
+3. Read tables carefully - vacancies = INTEGER count (e.g., 50, 100) NOT year (2026)
+4. Dates in DD-MM-YYYY format
+5. Use null for fields you cannot find
+6. Extract EXACT text you see
 
 Questions:
+
 1. What is the EXACT job title/post name shown?
+
 2. What is the EXACT organization/department name?
-3. How many TOTAL vacancies? (Look in tables, count INTEGER only)
+
+3. How many TOTAL vacancies? (Look in tables, count INTEGER only, NOT year)
+
 4. What is the notification/advertisement number?
-5. Important dates:
-   - Application start date? (DD-MM-YYYY)
-   - Last date to apply? (DD-MM-YYYY)
-   - Exam date if shown? (DD-MM-YYYY)
+
+5. What is the LAST DATE to apply? (Application deadline only, NOT notification date)
+   Format: DD-MM-YYYY
+
 6. Salary or pay scale?
+
 7. Age limit for applicants?
+
 8. Educational qualification required?
-9. Job location or posting place?
+
+9. **CRITICAL: What is the job LOCATION?**
+   Look VERY carefully in the document for:
+   - "Place of Posting" section
+   - "Location" or "Work Station" mentioned
+   - City names: Delhi, Mumbai, Bangalore, Chennai, Kolkata, etc.
+   - State names: Maharashtra, Karnataka, Tamil Nadu, UP, etc.
+   - Phrases like "All India", "Pan India", "Various Locations"
+   - Location columns in vacancy tables
+   Extract the EXACT location text you see
+
 10. Application fee by category?
+
 11. Selection process or exam pattern?
-12. How to apply? (Steps shown in document)
-13. Post-wise vacancy breakdown from tables?
+
+12. How to apply? (Steps visible in document)
+
+13. Important dates visible:
+    - Application start? (DD-MM-YYYY)
+    - Last date? (DD-MM-YYYY)
+    - Exam date? (DD-MM-YYYY)
+
+14. Post-wise vacancy breakdown from tables?
 
 Return ONLY this JSON:
 {
@@ -256,19 +322,18 @@ Return ONLY this JSON:
     "organization": "Exact organization name",
     "vacancies": 100,
     "advt_no": "Notification number",
-    "post_date": "DD-MM-YYYY or null",
     "last_date": "DD-MM-YYYY",
     "salary": "Pay scale",
     "age_limit": "Age requirement",
     "qualification": "Education required",
-    "location": "Job location",
+    "location": "Job location/posting place (MUST extract - check document carefully)",
     "application_fee": {"General": "Rs. X", "SC/ST": "Nil"},
     "selection_process": "Selection method",
     "how_to_apply": "Application steps",
     "important_dates": {
-        "Application Start": "DD-MM-YYYY",
+        "Application Start": "DD-MM-YYYY or null",
         "Application End": "DD-MM-YYYY",
-        "Exam Date": "DD-MM-YYYY"
+        "Exam Date": "DD-MM-YYYY or null"
     },
     "vacancy_details": {
         "Post 1": "Count",
@@ -278,7 +343,10 @@ Return ONLY this JSON:
 
 REMEMBER:
 - NO URLs
+- NO post_date
 - Vacancies = INTEGER count from tables
+- Location = MUST find and extract (very important!)
+- last_date = Application deadline
 - Dates = DD-MM-YYYY
 - null if not visible
 
