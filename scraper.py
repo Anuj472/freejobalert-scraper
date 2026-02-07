@@ -1,6 +1,7 @@
-"""Web scraper for FreeJobAlert.com with hybrid CSS + LLM parsing.
+"""Web scraper for FreeJobAlert.com using robust CSS-only parsing.
 
-Fixed: Vacancies field no longer extracts year (2026) from titles.
+NO LLM required - all extraction done with CSS selectors and regex.
+Properly extracts vacancies without confusing with year.
 """
 
 import logging
@@ -14,27 +15,17 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from config import Config
-from llm_parser import JobLLMParser
+from robust_parser import RobustJobParser
 
 logger = logging.getLogger(__name__)
 
 class FreeJobAlertScraper:
-    """Scraper for FreeJobAlert.com job listings with LLM fallback."""
+    """Scraper for FreeJobAlert.com job listings."""
     
     BASE_URL = "https://www.freejobalert.com"
     
-    # Critical fields that MUST be extracted
-    CRITICAL_FIELDS = set(Config.LLM_CRITICAL_FIELDS)
-    
-    # Optional fields for better data quality
-    OPTIONAL_FIELDS = {
-        'salary', 'age_limit', 'application_fee', 'selection_process',
-        'how_to_apply', 'location', 'official_website', 'application_url',
-        'official_notification_pdf', 'qualification', 'vacancies'
-    }
-    
     def __init__(self):
-        """Initialize the scraper with session and LLM parser."""
+        """Initialize the scraper with session and parser."""
         self.session = requests.Session()
         
         # Setup retry strategy
@@ -59,147 +50,9 @@ class FreeJobAlertScraper:
             'Upgrade-Insecure-Requests': '1'
         })
         
-        # Initialize LLM parser if enabled
-        self.llm_parser = None
-        if Config.USE_LLM_FALLBACK:
-            try:
-                self.llm_parser = JobLLMParser()
-                if self.llm_parser.is_available():
-                    logger.info("✓ LLM parser initialized and available")
-                    if Config.LLM_ALWAYS_ENABLED:
-                        logger.info("✓ LLM_ALWAYS_ENABLED: Will use LLM for all jobs for consistent data quality")
-                else:
-                    logger.warning("⚠️  LLM parser initialized but no provider available")
-                    self.llm_parser = None
-            except Exception as e:
-                logger.warning(f"Failed to initialize LLM parser: {e}")
-                self.llm_parser = None
-    
-    def _extract_vacancies_from_title(self, title: str) -> Optional[int]:
-        """Extract vacancy count from title.
-        
-        Extracts the number from patterns like:
-        - "Apply for 150 Posts"
-        - "Recruitment 2026 - 80 Vacancies"
-        - "20 Posts"
-        
-        Filters out years (2024-2030).
-        """
-        if not title:
-            return None
-        
-        # Find all numbers in title
-        numbers = re.findall(r'\b(\d+)\b', title)
-        
-        if not numbers:
-            return None
-        
-        # Convert to integers and filter out years
-        valid_numbers = []
-        for num_str in numbers:
-            num = int(num_str)
-            # Filter out years (2024-2030) and very large numbers
-            if num < 2024 or num > 2030:
-                if num < 10000:  # Reasonable vacancy count
-                    valid_numbers.append(num)
-        
-        if not valid_numbers:
-            return None
-        
-        # Prefer numbers near "posts" or "vacancies" keywords
-        title_lower = title.lower()
-        for i, num_str in enumerate(numbers):
-            num = int(num_str)
-            if num in valid_numbers:
-                # Get context around this number
-                pos = title_lower.find(num_str)
-                if pos >= 0:
-                    context = title_lower[max(0, pos-20):pos+30]
-                    if 'post' in context or 'vacanc' in context:
-                        return num
-        
-        # Return first valid number if no context match
-        return valid_numbers[0] if valid_numbers else None
-    
-    def _get_missing_fields(self, job_data: Dict) -> Dict[str, List[str]]:
-        """Identify which fields are missing from scraped data."""
-        missing_critical = []
-        missing_optional = []
-        
-        for field in self.CRITICAL_FIELDS:
-            value = job_data.get(field)
-            if not value or (isinstance(value, str) and len(value.strip()) < 3):
-                missing_critical.append(field)
-        
-        for field in self.OPTIONAL_FIELDS:
-            value = job_data.get(field)
-            if not value or (isinstance(value, str) and len(value.strip()) < 3):
-                missing_optional.append(field)
-        
-        return {
-            'critical': missing_critical,
-            'optional': missing_optional
-        }
-    
-    def _should_use_llm(self, missing_fields: Dict[str, List[str]]) -> bool:
-        """Decide if LLM parsing is needed based on missing fields."""
-        if not self.llm_parser or not Config.USE_LLM_FALLBACK:
-            return False
-        
-        # Always use LLM if enabled (for consistent high-quality data)
-        if Config.LLM_ALWAYS_ENABLED:
-            logger.debug("LLM always enabled - will enhance all fields")
-            return True
-        
-        # Fallback mode: Only use LLM if fields are missing
-        # Use LLM if ANY critical field is missing
-        if len(missing_fields['critical']) > 0:
-            return True
-        
-        # Use LLM if too many optional fields are missing
-        if len(missing_fields['optional']) >= Config.LLM_OPTIONAL_THRESHOLD:
-            return True
-        
-        return False
-    
-    def _merge_llm_data(self, css_data: Dict, llm_data: Dict) -> Dict:
-        """Merge LLM extracted data with CSS data.
-        
-        Special handling for vacancies: Always prefer LLM if CSS has year.
-        """
-        result = css_data.copy()
-        
-        for key, value in llm_data.items():
-            # Special handling for vacancies field
-            if key == 'vacancies':
-                css_val = result.get('vacancies')
-                # If CSS has a year (2024-2030), always use LLM value
-                if isinstance(css_val, int) and 2024 <= css_val <= 2030:
-                    if value and isinstance(value, int) and value < 2024:
-                        result['vacancies'] = value
-                        logger.info(f"  ✓ Fixed vacancies: {css_val} (year) → {value} (count)")
-                    else:
-                        result['vacancies'] = None
-                        logger.info(f"  ✓ Removed year from vacancies: {css_val} → null")
-                # If CSS has no value, use LLM
-                elif not css_val and value:
-                    result['vacancies'] = value
-                    logger.debug(f"  ✓ Using LLM value for vacancies: {value}")
-                continue
-            
-            # Only use LLM value if CSS didn't find it or found empty value
-            if key not in result or not result[key]:
-                if value and (not isinstance(value, str) or len(value.strip()) >= 3):
-                    result[key] = value
-                    logger.debug(f"  ✓ Using LLM value for {key}: {str(value)[:60]}")
-            # If LLM provides better data, prefer it
-            elif isinstance(result[key], str) and isinstance(value, str):
-                # LLM value is longer and more detailed, use it
-                if len(value.strip()) > len(result[key].strip()) * 1.5:
-                    result[key] = value
-                    logger.debug(f"  ✓ LLM provided better {key}: {str(value)[:60]}")
-        
-        return result
+        # Initialize robust parser (no LLM)
+        self.parser = RobustJobParser()
+        logger.info("✓ Using robust CSS-only parser (no LLM required)")
     
     def scrape_category(
         self,
@@ -375,9 +228,6 @@ class FreeJobAlertScraper:
         exam_post_name = cells[2].get_text(strip=True)
         qualification = cells[3].get_text(strip=True)
         
-        # Try to extract vacancies from title
-        vacancies = self._extract_vacancies_from_title(exam_post_name)
-        
         # Handle variable column counts (some tables may have different structures)
         if len(cells) >= 7:
             advt_no = cells[4].get_text(strip=True)
@@ -398,23 +248,12 @@ class FreeJobAlertScraper:
             'source': 'freejobalert'
         }
         
-        # Only add vacancies if valid (not year)
-        if vacancies:
-            job_data['vacancies'] = vacancies
-        
         return job_data
-    
-    def _is_freejobalert_pdf(self, url: str) -> bool:
-        """Check if PDF is hosted on FreeJobAlert domain."""
-        if not url:
-            return False
-        parsed = urlparse(url.lower())
-        return 'freejobalert.com' in parsed.netloc or 'img2.freejobalert.com' in parsed.netloc
     
     def get_job_details(self, details_url: str) -> Optional[dict]:
         """
         Fetch detailed job information from the job details page.
-        Uses CSS selectors first, then LLM enhancement for all fields or missing fields.
+        Uses robust CSS-only parser (no LLM required).
         
         Args:
             details_url: URL of the job details page
@@ -429,40 +268,17 @@ class FreeJobAlertScraper:
             response.raise_for_status()
             
             html_content = response.text
-            soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Step 1: Extract with CSS selectors (fast)
-            details = self._extract_details_with_css(soup, details_url)
+            # Use robust parser to extract all fields
+            details = self.parser.parse_job_details(html_content, details_url)
             
-            # Step 2: Check what's missing
-            missing = self._get_missing_fields(details)
+            # Count extracted fields
+            field_count = sum(1 for v in details.values() if v and str(v).strip())
+            logger.info(f"✓ Extracted {field_count} non-empty fields")
             
-            css_field_count = len([v for v in details.values() if v and str(v).strip()])
-            logger.info(f"CSS extracted {css_field_count} non-empty fields")
-            
-            if missing['critical']:
-                logger.info(f"⚠️  Missing critical: {', '.join(missing['critical'])}")
-            if missing['optional']:
-                logger.debug(f"Missing optional: {', '.join(missing['optional'][:5])}...")
-            
-            # Step 3: Use LLM if needed
-            if self._should_use_llm(missing):
-                if Config.LLM_ALWAYS_ENABLED:
-                    # Extract ALL fields for consistent data quality
-                    logger.info("🤖 Using LLM to enhance ALL fields (LLM_ALWAYS_ENABLED)")
-                    all_fields = list(self.CRITICAL_FIELDS) + list(self.OPTIONAL_FIELDS)
-                    llm_data = self.llm_parser.parse_missing_fields(html_content, all_fields)
-                else:
-                    # Only extract missing fields (fallback mode)
-                    logger.info(f"🤖 LLM fallback triggered: {len(missing['critical'])} critical + {len(missing['optional'])} optional fields missing")
-                    fields_to_extract = missing['critical'] + missing['optional']
-                    llm_data = self.llm_parser.parse_missing_fields(html_content, fields_to_extract)
-                
-                if llm_data:
-                    details = self._merge_llm_data(details, llm_data)
-                    logger.info("✓ Merged LLM data with CSS data")
-            else:
-                logger.info("✓ All critical fields found, skipping LLM")
+            # Log vacancies if found
+            if details.get('vacancies'):
+                logger.info(f"  ✓ Vacancies: {details['vacancies']}")
             
             time.sleep(Config.REQUEST_DELAY)
             return details
@@ -473,186 +289,6 @@ class FreeJobAlertScraper:
         except Exception as e:
             logger.error(f"Error parsing job details: {e}")
             return None
-    
-    def _extract_details_with_css(self, soup: BeautifulSoup, details_url: str) -> Dict:
-        """Extract job details using CSS selectors (original logic)."""
-        details = {
-            'job_url': details_url,
-            'full_description': '',
-            'official_notification_pdf': '',
-            'official_website': '',
-            'application_url': '',
-            'organization_url': '',
-            'pdf_url': '',
-            'pdf_needs_upload': False,
-            'important_dates': {},
-            'vacancy_details': {},
-            'salary': '',
-            'age_limit': '',
-            'application_fee': '',
-            'selection_process': '',
-            'how_to_apply': '',
-            'location': ''
-        }
-        
-        # Extract title from h1 or title tag
-        title_tag = soup.find('h1', class_='entry-title')
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-            details['title'] = title
-            
-            # Try to extract vacancies from title
-            vacancies = self._extract_vacancies_from_title(title)
-            if vacancies:
-                details['vacancies'] = vacancies
-        
-        # Find the main content area
-        content_div = soup.find('div', class_='entry-content') or soup.find('article')
-        
-        if content_div:
-            # Extract all links from content
-            links = content_div.find_all('a', href=True)
-            
-            for link in links:
-                link_text = link.get_text(strip=True).lower()
-                href = link.get('href', '')
-                
-                # Skip empty or anchor links
-                if not href or href.startswith('#'):
-                    continue
-                
-                # Make absolute URL
-                absolute_url = urljoin(self.BASE_URL, href)
-                
-                # Identify link type based on parent context and text
-                parent_text = ''
-                if link.parent:
-                    parent_text = link.parent.get_text(strip=True).lower()
-                
-                # Official Notification PDF
-                if ('official notification' in parent_text and 'pdf' in parent_text) or \
-                   ('notification' in link_text and 'pdf' in link_text):
-                    if href.lower().endswith('.pdf') or '.pdf' in href.lower():
-                        if self._is_freejobalert_pdf(absolute_url):
-                            details['official_notification_pdf'] = absolute_url
-                            details['pdf_needs_upload'] = True
-                            logger.info(f"Found FreeJobAlert PDF (needs upload): {absolute_url[:60]}")
-                        else:
-                            details['official_notification_pdf'] = absolute_url
-                            details['pdf_url'] = absolute_url
-                            logger.info(f"Found external PDF: {absolute_url[:60]}")
-                
-                # Apply Online
-                elif 'apply online' in parent_text or 'apply online' in link_text:
-                    if 'click here' in link_text or 'apply' in link_text:
-                        details['application_url'] = absolute_url
-                        logger.info(f"Found application URL: {absolute_url[:60]}")
-                
-                # Official Website
-                elif 'official website' in parent_text or 'official website' in link_text:
-                    if 'click here' in link_text:
-                        details['official_website'] = absolute_url
-                        details['organization_url'] = absolute_url
-                        logger.info(f"Found official website: {absolute_url[:60]}")
-                
-                # Fallback: Any PDF link
-                elif href.lower().endswith('.pdf') and 'click here' in link_text:
-                    if not details['official_notification_pdf']:
-                        if self._is_freejobalert_pdf(absolute_url):
-                            details['official_notification_pdf'] = absolute_url
-                            details['pdf_needs_upload'] = True
-                        else:
-                            details['official_notification_pdf'] = absolute_url
-                            details['pdf_url'] = absolute_url
-            
-            # Extract structured data from tables
-            tables = content_div.find_all('table')
-            for table in tables:
-                table_data = self._extract_table_data(table)
-                
-                table_str = str(table).lower()
-                if 'vacancy' in table_str or 'posts' in table_str or 'post name' in table_str:
-                    details['vacancy_details'].update(table_data)
-                elif 'date' in table_str or 'important' in table_str:
-                    details['important_dates'].update(table_data)
-                elif 'salary' in table_str or 'stipend' in table_str or 'pay scale' in table_str:
-                    for k, v in table_data.items():
-                        if 'salary' in k.lower() or 'stipend' in k.lower() or 'pay' in k.lower():
-                            details['salary'] = v
-                
-                # Extract specific fields from any table
-                for key, value in table_data.items():
-                    key_lower = key.lower()
-                    if 'age' in key_lower and not details['age_limit']:
-                        details['age_limit'] = value
-                    elif 'fee' in key_lower and not details['application_fee']:
-                        details['application_fee'] = value
-                    elif 'location' in key_lower and not details['location']:
-                        details['location'] = value
-            
-            # Extract section-based content
-            headings = content_div.find_all(['h2', 'h3', 'h4'])
-            for heading in headings:
-                heading_text = heading.get_text(strip=True).lower()
-                
-                content_parts = []
-                for sibling in heading.find_next_siblings():
-                    if sibling.name in ['h2', 'h3', 'h4']:
-                        break
-                    if sibling.name in ['p', 'ul', 'ol', 'table']:
-                        content_parts.append(sibling.get_text(separator=' ', strip=True))
-                
-                section_content = ' '.join(content_parts)
-                
-                if 'selection' in heading_text or 'exam pattern' in heading_text:
-                    details['selection_process'] = section_content[:500]
-                elif 'how to apply' in heading_text or 'application procedure' in heading_text:
-                    details['how_to_apply'] = section_content[:500]
-                elif 'important date' in heading_text:
-                    self._extract_dates_from_text(section_content, details['important_dates'])
-                elif 'salary' in heading_text and not details['salary']:
-                    details['salary'] = section_content[:200]
-            
-            # Get full description
-            for script in content_div(["script", "style", "iframe"]):
-                script.decompose()
-            details['full_description'] = content_div.get_text(separator='\n', strip=True)[:2000]
-        
-        return details
-    
-    def _extract_table_data(self, table) -> Dict[str, str]:
-        """Extract key-value pairs from a table."""
-        data = {}
-        rows = table.find_all('tr')
-        
-        for row in rows:
-            cells = row.find_all(['td', 'th'])
-            if len(cells) == 2:
-                key = cells[0].get_text(strip=True)
-                value = cells[1].get_text(strip=True)
-                if key and value:
-                    data[key] = value
-            elif len(cells) > 2:
-                key = cells[0].get_text(strip=True)
-                value = ' | '.join([c.get_text(strip=True) for c in cells[1:]])
-                if key and value:
-                    data[key] = value
-        
-        return data
-    
-    def _extract_dates_from_text(self, text: str, dates_dict: dict):
-        """Extract dates from text using patterns."""
-        date_patterns = [
-            (r'last date[:\s]+([\d\-/]+)', 'Last Date'),
-            (r'start date[:\s]+([\d\-/]+)', 'Start Date'),
-            (r'closing date[:\s]+([\d\-/]+)', 'Closing Date'),
-            (r'exam date[:\s]+([\d\-/]+)', 'Exam Date'),
-        ]
-        
-        for pattern, key in date_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                dates_dict[key] = match.group(1)
     
     def download_pdf(self, pdf_url: str, output_path: str) -> bool:
         """
