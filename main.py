@@ -2,8 +2,10 @@
 """Main execution script for FreeJobAlert scraper.
 
 Fixed: Google Drive upload logic
-- FreeJobAlert PDFs → Upload to Drive → Save in gdrive_link
-- External PDFs → Keep original URL in pdf_url
+- FreeJobAlert PDFs -> Upload to Drive -> Save in gdrive_link
+- External PDFs -> Keep original URL in pdf_url
+
+Fixed: Windows console encoding - use ASCII symbols
 """
 
 import sys
@@ -19,12 +21,12 @@ from scraper import FreeJobAlertScraper
 from supabase_client import SupabaseClient
 from gdrive_upload import GoogleDriveUploader
 
-# Configure logging
+# Configure logging with UTF-8 encoding for Windows
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(Config.LOG_FILE),
+        logging.FileHandler(Config.LOG_FILE, encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -47,8 +49,8 @@ def process_job(
     """Process a single job: fetch details, download PDF, upload to Drive, save to DB.
     
     Logic:
-    - If PDF is from FreeJobAlert → Download + Upload to Drive → Save in gdrive_link
-    - If PDF is external → Keep original URL in pdf_url
+    - If PDF is from FreeJobAlert -> Download + Upload to Drive -> Save in gdrive_link
+    - If PDF is external -> Keep original URL in pdf_url
     """
     try:
         # Fetch detailed job information
@@ -73,7 +75,7 @@ def process_job(
             needs_upload = is_freejobalert_pdf(pdf_url) or job_data.get('pdf_needs_upload', False)
             
             if needs_upload:
-                # FreeJobAlert PDF → Upload to Google Drive
+                # FreeJobAlert PDF -> Upload to Google Drive
                 logger.info(f"FreeJobAlert PDF detected: {pdf_url[:60]}...")
                 logger.info(f"Downloading and uploading to Google Drive...")
                 
@@ -94,7 +96,7 @@ def process_job(
                     if gdrive_link:
                         # Save Google Drive link
                         job_data['gdrive_link'] = gdrive_link
-                        logger.info(f"✓ PDF uploaded to Google Drive: {gdrive_link[:60]}...")
+                        logger.info(f"[OK] PDF uploaded to Google Drive: {gdrive_link[:60]}...")
                     else:
                         logger.warning(f"Failed to upload PDF to Google Drive")
                     
@@ -106,7 +108,7 @@ def process_job(
                 else:
                     logger.warning(f"Failed to download PDF from: {pdf_url[:60]}...")
             else:
-                # External PDF → Keep original URL
+                # External PDF -> Keep original URL
                 logger.info(f"External PDF (no upload needed): {pdf_url[:60]}...")
                 job_data['pdf_url'] = pdf_url
         
@@ -114,9 +116,9 @@ def process_job(
         if supabase_client.insert_job(job_data):
             logger.info(f"Successfully saved: {job['title']}")
             if job_data.get('gdrive_link'):
-                logger.info(f"  → Google Drive: {job_data['gdrive_link'][:60]}...")
+                logger.info(f"  -> Google Drive: {job_data['gdrive_link'][:60]}...")
             if job_data.get('pdf_url'):
-                logger.info(f"  → PDF URL: {job_data['pdf_url'][:60]}...")
+                logger.info(f"  -> PDF URL: {job_data['pdf_url'][:60]}...")
             return True
         
         return False
@@ -164,7 +166,7 @@ def main():
         if not args.no_pdf:
             try:
                 gdrive_uploader = GoogleDriveUploader()
-                logger.info("✓ Google Drive uploader initialized")
+                logger.info("[OK] Google Drive uploader initialized")
             except Exception as e:
                 logger.warning(f"Google Drive uploader not available: {e}")
                 logger.warning("PDFs will not be uploaded to Drive (URLs will still be saved)")
