@@ -1,4 +1,7 @@
-"""Web scraper for FreeJobAlert.com with hybrid CSS + LLM parsing."""
+"""Web scraper for FreeJobAlert.com with hybrid CSS + LLM parsing.
+
+Fixed: Vacancies field no longer extracts year (2026) from titles.
+"""
 
 import logging
 import time
@@ -72,6 +75,52 @@ class FreeJobAlertScraper:
                 logger.warning(f"Failed to initialize LLM parser: {e}")
                 self.llm_parser = None
     
+    def _extract_vacancies_from_title(self, title: str) -> Optional[int]:
+        """Extract vacancy count from title.
+        
+        Extracts the number from patterns like:
+        - "Apply for 150 Posts"
+        - "Recruitment 2026 - 80 Vacancies"
+        - "20 Posts"
+        
+        Filters out years (2024-2030).
+        """
+        if not title:
+            return None
+        
+        # Find all numbers in title
+        numbers = re.findall(r'\b(\d+)\b', title)
+        
+        if not numbers:
+            return None
+        
+        # Convert to integers and filter out years
+        valid_numbers = []
+        for num_str in numbers:
+            num = int(num_str)
+            # Filter out years (2024-2030) and very large numbers
+            if num < 2024 or num > 2030:
+                if num < 10000:  # Reasonable vacancy count
+                    valid_numbers.append(num)
+        
+        if not valid_numbers:
+            return None
+        
+        # Prefer numbers near "posts" or "vacancies" keywords
+        title_lower = title.lower()
+        for i, num_str in enumerate(numbers):
+            num = int(num_str)
+            if num in valid_numbers:
+                # Get context around this number
+                pos = title_lower.find(num_str)
+                if pos >= 0:
+                    context = title_lower[max(0, pos-20):pos+30]
+                    if 'post' in context or 'vacanc' in context:
+                        return num
+        
+        # Return first valid number if no context match
+        return valid_numbers[0] if valid_numbers else None
+    
     def _get_missing_fields(self, job_data: Dict) -> Dict[str, List[str]]:
         """Identify which fields are missing from scraped data."""
         missing_critical = []
@@ -114,10 +163,30 @@ class FreeJobAlertScraper:
         return False
     
     def _merge_llm_data(self, css_data: Dict, llm_data: Dict) -> Dict:
-        """Merge LLM extracted data with CSS data (CSS takes precedence for non-empty values)."""
+        """Merge LLM extracted data with CSS data.
+        
+        Special handling for vacancies: Always prefer LLM if CSS has year.
+        """
         result = css_data.copy()
         
         for key, value in llm_data.items():
+            # Special handling for vacancies field
+            if key == 'vacancies':
+                css_val = result.get('vacancies')
+                # If CSS has a year (2024-2030), always use LLM value
+                if isinstance(css_val, int) and 2024 <= css_val <= 2030:
+                    if value and isinstance(value, int) and value < 2024:
+                        result['vacancies'] = value
+                        logger.info(f"  ✓ Fixed vacancies: {css_val} (year) → {value} (count)")
+                    else:
+                        result['vacancies'] = None
+                        logger.info(f"  ✓ Removed year from vacancies: {css_val} → null")
+                # If CSS has no value, use LLM
+                elif not css_val and value:
+                    result['vacancies'] = value
+                    logger.debug(f"  ✓ Using LLM value for vacancies: {value}")
+                continue
+            
             # Only use LLM value if CSS didn't find it or found empty value
             if key not in result or not result[key]:
                 if value and (not isinstance(value, str) or len(value.strip()) >= 3):
@@ -306,6 +375,9 @@ class FreeJobAlertScraper:
         exam_post_name = cells[2].get_text(strip=True)
         qualification = cells[3].get_text(strip=True)
         
+        # Try to extract vacancies from title
+        vacancies = self._extract_vacancies_from_title(exam_post_name)
+        
         # Handle variable column counts (some tables may have different structures)
         if len(cells) >= 7:
             advt_no = cells[4].get_text(strip=True)
@@ -314,7 +386,7 @@ class FreeJobAlertScraper:
             advt_no = cells[4].get_text(strip=True) if len(cells) > 4 else ''
             last_date = cells[5].get_text(strip=True) if len(cells) > 5 else ''
         
-        return {
+        job_data = {
             'title': exam_post_name,
             'organization': recruitment_board,
             'qualification': qualification,
@@ -325,6 +397,12 @@ class FreeJobAlertScraper:
             'category': category,
             'source': 'freejobalert'
         }
+        
+        # Only add vacancies if valid (not year)
+        if vacancies:
+            job_data['vacancies'] = vacancies
+        
+        return job_data
     
     def _is_freejobalert_pdf(self, url: str) -> bool:
         """Check if PDF is hosted on FreeJobAlert domain."""
@@ -420,7 +498,13 @@ class FreeJobAlertScraper:
         # Extract title from h1 or title tag
         title_tag = soup.find('h1', class_='entry-title')
         if title_tag:
-            details['title'] = title_tag.get_text(strip=True)
+            title = title_tag.get_text(strip=True)
+            details['title'] = title
+            
+            # Try to extract vacancies from title
+            vacancies = self._extract_vacancies_from_title(title)
+            if vacancies:
+                details['vacancies'] = vacancies
         
         # Find the main content area
         content_div = soup.find('div', class_='entry-content') or soup.find('article')
