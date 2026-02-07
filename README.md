@@ -1,426 +1,314 @@
-# FreeJobAlert.com Job Scraper
+# FreeJobAlert Scraper
 
-Automated job scraper that extracts job postings from FreeJobAlert.com with **local LLM extraction**, storing structured JSON data in Supabase.
+> Smart job scraper with PDF-first extraction using Gemma 3 12B multimodal + HTML fallback
 
-## Features
+## 🚀 Features
 
-- 🔍 Scrapes job listings from FreeJobAlert.com (latest notifications, government jobs, etc.)
-- 🦙 **Ollama Local LLM** - Private, free extraction with Llama 3.2 1B
-- 📋 **JSON Output** - Structured data matching your exact database schema
-- 💾 Stores job data in Supabase PostgreSQL database
-- 📄 Downloads PDF notices automatically
-- ☁️ Uploads PDFs to Google Drive and stores shareable links
-- 🔄 Handles pagination and multiple job categories
-- ⚡ Robust error handling and retry mechanisms
-- 📊 Duplicate detection to avoid re-scraping
-- 🎯 **Future-proof** - LLM adapts to HTML changes automatically
+- **PDF-First Extraction**: Uses Gemma 3 12B multimodal to extract data from PDF notifications
+- **HTML Fallback**: CSS parser extracts from HTML when no PDF available
+- **Smart Category Detection**: Gemma determines job category (banking, railway, defence, etc.)
+- **SEO Blog Generation**: Generates optimized blog content (<1000 words)
+- **Google Drive Upload**: Uploads FreeJobAlert PDFs to Google Drive
+- **Link Filtering**: Removes FreeJobAlert links, keeps only official organization links
 
-## 🦙 Local LLM Extraction (Recommended)
+## 📋 Schema Field Extraction
 
-Uses **Ollama** with **Llama 3.2 1B** - a small, fast model running on your machine:
+### **LLM Output** (Gemma 3 from PDF or HTML text):
 
-✅ **100% Private** - All data stays on your machine  
-✅ **100% Free** - No API costs, ever  
-✅ **JSON Output** - Structured data for your database  
-✅ **Small Model** - Only 1.3GB (Llama 3.2 1B)  
-✅ **85-90% Accuracy** - Much better than CSS only (70%)  
-✅ **Works Offline** - After initial model download  
+```python
+# Gemma extracts these fields by analyzing PDF/text content:
+LLM_FIELDS = [
+    'title',              # Job title/post name
+    'organization',       # Organization/department name
+    'vacancies',          # Total vacancy count (INTEGER, not year)
+    'qualification',      # Educational qualification
+    'location',           # Job location/posting place
+    'category',           # Job category (banking/railway/defence/ssc/upsc/etc.)
+    'advt_no',           # Advertisement/notification number
+    'full_description',  # Complete job description
+    'salary',            # Pay scale/salary range
+    'age_limit',         # Age requirement
+    'application_fee',   # Fee structure
+    'selection_process', # Exam/selection method
+    'how_to_apply',      # Application instructions
+    'important_dates',   # Dates (JSON: {"Application Start": "...", "Last Date": "..."})
+    'vacancy_details',   # Post-wise breakdown (JSON: {"Manager": "10", "Clerk": "20"})
+]
+```
 
-### Quick Comparison
+### **HTML Parse** (CSS selectors from HTML):
 
-| Option | Privacy | Cost | Speed | Accuracy | Setup |
-|--------|---------|------|-------|----------|-------|
-| **Ollama Local** 🦙 | **100%** | **$0** | 6-8 sec | 85-90% | 5 min |
-| Groq Cloud | ⚠️ Cloud | $0 | 4-5 sec | 95%+ | 2 min |
-| CSS Only | N/A | $0 | 3 sec | 70-80% | 0 min |
+```python
+# HTML parser extracts these using CSS selectors:
+HTML_FIELDS = [
+    'post_date',         # Article publish date (from HTML metadata)
+    'last_date',         # Application deadline (from HTML tables)
+    'job_url',           # Job details page URL
+    'pdf_url',           # PDF notification URL
+    'gdrive_link',       # Google Drive uploaded PDF link
+    'official_website',  # Organization official website
+    'organization_url',  # Organization URL
+    'application_url',   # Online application URL
+]
+```
 
-📖 **[Local Setup: OLLAMA_LOCAL.md](OLLAMA_LOCAL.md)** ⭐  
-📖 **[Detailed Guide: OLLAMA_SETUP.md](OLLAMA_SETUP.md)**  
-📖 **[Cloud Option: LLM_SETUP.md](LLM_SETUP.md)** (Groq)
+### **CRITICAL RULE**: ❌ NO FreeJobAlert Links
 
-## 📋 Structured JSON Output
+```python
+# All extracted links are filtered:
+if 'freejobalert.com' in url:
+    url = None  # Remove FreeJobAlert links
 
-The LLM extracts data in **proper JSON format** matching your database:
+# Links can be NULL but NEVER contain freejobalert.com
+```
 
-```json
-{
-  "title": "UPSC Combined Medical Services 2026",
-  "organization": "Union Public Service Commission",
-  "vacancies": 150,
-  "location": "New Delhi, Delhi",
-  "application_fee": {
-    "General/OBC": "Rs. 100",
-    "SC/ST/Women": "Nil"
-  },
-  "important_dates": {
-    "Application End": "28-02-2026",
-    "Exam Date": "15-04-2026"
-  },
-  "vacancy_details": {
-    "Assistant Medical Officer": "100 posts",
-    "Junior Medical Officer": "50 posts"
-  }
+## 🎯 Category Detection
+
+Gemma 3 determines category based on organization:
+
+```python
+CATEGORIES = {
+    'banking': ['SBI', 'IBPS', 'RBI', 'Bank of India', 'PNB', 'Canara Bank'],
+    'railway': ['Indian Railways', 'RRB', 'Railway Recruitment Board'],
+    'defence': ['Indian Army', 'Navy', 'Air Force', 'DRDO', 'NDA', 'Coast Guard'],
+    'ssc': ['Staff Selection Commission', 'SSC'],
+    'upsc': ['Union Public Service Commission', 'UPSC'],
+    'police': ['Police Department', 'State Police', 'Central Police'],
+    'teaching': ['University', 'School', 'Education Department', 'UGC', 'NCERT'],
+    'psu': ['NTPC', 'ONGC', 'SAIL', 'BHEL', 'Coal India'],
+    'state-govt': ['State Government Department'],
+    'central-govt': ['Central Government Department'],
 }
 ```
 
-**Perfect for frontend presentation!** 🎉
+## 📊 Extraction Flow
 
-## Prerequisites
+### **Scenario 1: PDF Available**
 
-- Python 3.8+
-- Supabase account and project
-- Google Cloud Platform account with Drive API enabled
-- Google Drive API credentials
-- **[Ollama](https://ollama.com/)** (for local LLM) OR **[Groq API key](https://console.groq.com/)** (for cloud LLM)
+```
+1. Download PDF from URL
+2. Gemma 3 extracts LLM fields from PDF:
+   - title, organization, vacancies, category, location, etc.
+   - NO URLs (Gemma doesn't extract links)
+   - NO post_date (comes from HTML)
+3. HTML parser extracts:
+   - post_date, last_date (from HTML tables)
+   - pdf_url, application_url, official_website
+4. Filter FreeJobAlert links
+5. Merge data + generate blog
+6. Save to Supabase
+```
 
-## Installation
+### **Scenario 2: NO PDF Available**
 
-### Step 1: Clone Repository
+```
+1. HTML parser extracts basic info
+2. Gemma 3 analyzes HTML text content:
+   - Reads organization name: "Punjab and Sind Bank"
+   - Determines category: "banking"
+   - Extracts qualification, location, etc.
+3. HTML parser extracts:
+   - post_date, last_date, URLs
+4. Filter FreeJobAlert links
+5. Merge data + generate blog
+6. Save to Supabase
+```
+
+## 🛠️ Installation
 
 ```bash
+# Clone repository
 git clone https://github.com/Anuj472/freejobalert-scraper.git
 cd freejobalert-scraper
-```
 
-### Step 2: Install Dependencies
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### Step 3: Setup Ollama (Local LLM)
-
-```bash
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Pull model (1.3GB download)
-ollama pull llama3.2:1b
+# Pull Gemma 3 12B model
+ollama pull gemma3:12b
 
-# Start server (keep running)
-ollama serve
-```
-
-**Windows:** Download from [ollama.com/download/windows](https://ollama.com/download/windows)
-
-### Step 4: Configure Environment
-
-```bash
+# Setup environment variables
 cp .env.example .env
+# Edit .env with your:
+# - Supabase URL and KEY
+# - Google Drive credentials (optional)
 ```
 
-Edit `.env` with your credentials:
-```bash
-# Supabase
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your-key
-
-# Google Drive
-GOOGLE_DRIVE_FOLDER_ID=your-folder-id
-
-# Ollama (already configured)
-OLLAMA_MODEL=llama3.2:1b
-USE_LLM_FALLBACK=true
-LLM_ALWAYS_ENABLED=true
-```
-
-### Step 5: Run
+## 🚀 Usage
 
 ```bash
-python main.py --max-pages 1
-```
-
-## Supabase Setup
-
-Create table with **JSON fields** for structured data:
-
-```sql
-CREATE TABLE jobs (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  title TEXT NOT NULL,
-  organization TEXT,
-  post_date DATE,
-  last_date DATE,
-  vacancies INTEGER,  -- LLM extracts as number
-  qualification TEXT,
-  location TEXT,  -- LLM includes city + state
-  job_url TEXT UNIQUE NOT NULL,
-  application_url TEXT,
-  official_website TEXT,
-  pdf_url TEXT,
-  gdrive_link TEXT,
-  category TEXT,  -- LLM categorizes (UPSC/Railway/SSC/etc)
-  advt_no TEXT,
-  salary TEXT,
-  age_limit TEXT,
-  application_fee JSONB,  -- ✨ JSON: {"General": "Rs. 100", "SC/ST": "Nil"}
-  selection_process TEXT,
-  how_to_apply TEXT,
-  important_dates JSONB,  -- ✨ JSON: {"Last Date": "28-02-2026", ...}
-  vacancy_details JSONB,  -- ✨ JSON: {"Post Name": "Count", ...}
-  freejobalert_url TEXT,
-  official_notification_pdf TEXT,
-  full_description TEXT,
-  scraped_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  CONSTRAINT jobs_job_url_key UNIQUE (job_url),
-  CONSTRAINT jobs_freejobalert_url_unique UNIQUE (freejobalert_url)
-);
-
--- Indexes
-CREATE INDEX idx_jobs_url ON jobs(job_url);
-CREATE INDEX idx_jobs_scraped_at ON jobs(scraped_at);
-CREATE INDEX idx_jobs_organization_url ON jobs USING btree(official_website);
-```
-
-## Usage
-
-### Basic Usage
-
-```bash
-# Scrape with local Ollama
-python main.py --max-pages 1
-```
-
-### Scrape Specific Categories
-
-```bash
+# Scrape latest notifications (default: 2 pages)
 python main.py --category latest-notifications
-python main.py --category government-jobs
-python main.py --category railway-jobs
+
+# Scrape specific category with more pages
+python main.py --category latest-notifications --max-pages 5
+
+# Skip PDF processing (HTML only)
+python main.py --category latest-notifications --no-pdf
 ```
 
-### Check Logs
-
-```bash
-# See LLM extraction
-grep "🤖 Using LLM" scraper.log
-
-# Check JSON fields extracted
-grep "important_dates\|vacancy_details\|application_fee" scraper.log
-```
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 freejobalert-scraper/
-├── README.md
-├── OLLAMA_LOCAL.md        # ⭐ Quick start for Ollama
-├── OLLAMA_SETUP.md        # Detailed Ollama guide
-├── LLM_SETUP.md           # Groq cloud option
-├── requirements.txt
-├── config.py              # Configuration (Ollama default)
-├── llm_parser.py          # LLM with schema-aware prompts
-├── scraper.py             # Web scraping with LLM
-├── main.py                # Main execution
-├── supabase_client.py     # Database operations
-└── gdrive_upload.py       # PDF upload
+├── main.py                 # Main execution script
+├── config.py               # Configuration settings
+├── scraper.py              # Web scraper (listing pages)
+├── smart_processor.py      # Smart extraction orchestrator
+├── gemma_processor.py      # Gemma 3 12B PDF/text processor
+├── robust_parser.py        # HTML CSS parser
+├── supabase_client.py      # Supabase database client
+├── gdrive_upload.py        # Google Drive uploader
+└── requirements.txt        # Python dependencies
 ```
 
-## Performance
+## 🗄️ Database Schema
 
-### With Ollama Llama 3.2 1B (Local)
+See `schema.sql` for complete Supabase table structure.
 
-| Metric | Value |
-|--------|-------|
-| **Speed** | 6-8 seconds/job |
-| **Accuracy** | 85-90% |
-| **Cost** | $0 |
-| **Privacy** | 100% private |
-| **Model Size** | 1.3GB |
-| **RAM Usage** | 2-3GB |
+```sql
+create table public.jobs (
+  id uuid primary key default gen_random_uuid(),
+  
+  -- LLM extracted fields
+  title text not null,
+  organization text,
+  vacancies integer,
+  qualification text,
+  location text,
+  category text,
+  advt_no text,
+  full_description text,
+  salary text,
+  age_limit text,
+  application_fee text,
+  selection_process text,
+  how_to_apply text,
+  important_dates jsonb,
+  vacancy_details jsonb,
+  
+  -- HTML parsed fields
+  post_date date,
+  last_date date,
+  job_url text not null unique,
+  pdf_url text,
+  gdrive_link text,
+  official_website text,
+  organization_url text,
+  application_url text,
+  
+  -- Auto-generated fields
+  scraped_at timestamp default now(),
+  updated_at timestamp default now(),
+  
+  -- SEO fields (generated by Gemma)
+  seo_title text,
+  meta_description text,
+  blog_article text,
+  highlights jsonb,
+  faqs jsonb,
+  
+  -- Metadata
+  freejobalert_url text unique,
+  data_source text check (data_source in ('pdf_gemma3', 'html_css'))
+);
+```
 
-### Real Performance
+## 🔧 Configuration
 
-**100 Jobs:**
-- Time: 10-12 minutes
-- Cost: $0
-- JSON fields: ✅
-- Privacy: ✅
+### Environment Variables (.env)
 
-**Daily (15 jobs):**
-- Time: 2 minutes
-- Cost: $0/day
-- Consistent quality!
+```env
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-anon-key
 
-## Data Schema Features
+# Ollama (optional, defaults to localhost)
+OLLAMA_URL=http://localhost:11434
 
-### JSON Fields (Better for Frontend)
+# Google Drive (optional)
+GOOGLE_DRIVE_CREDENTIALS_FILE=path/to/credentials.json
+GOOGLE_DRIVE_FOLDER_ID=your-folder-id
+```
 
-#### application_fee
+## 📈 Performance
+
+- **PDF Extraction**: ~15-30 seconds per job (with Gemma 3)
+- **HTML Extraction**: ~5-10 seconds per job
+- **Blog Generation**: ~20-40 seconds per job
+- **Total**: ~40-80 seconds per job (with PDF + blog)
+
+## 🤖 Gemma 3 12B Requirements
+
+- **RAM**: 16 GB minimum
+- **VRAM**: 8.1 GB (for GPU acceleration)
+- **Context**: 128K tokens
+- **Features**: Vision + Text
+
+## 📝 Example Output
+
 ```json
 {
-  "General/OBC": "Rs. 100",
-  "SC/ST/Women": "Nil",
-  "PwD": "Nil"
+  "title": "Deputy Manager Recruitment 2026",
+  "organization": "Export-Import Bank of India",
+  "category": "banking",
+  "vacancies": 20,
+  "location": "Mumbai, Maharashtra",
+  "qualification": "Post Graduate Degree in relevant field",
+  "last_date": "15-02-2026",
+  "salary": "Rs. 60,000 - 1,80,000",
+  "application_url": "https://www.eximbankindia.in/careers",
+  "pdf_url": null,
+  "gdrive_link": "https://drive.google.com/file/d/...",
+  "data_source": "pdf_gemma3",
+  "blog_article": "# Deputy Manager Recruitment..."
 }
 ```
 
-#### important_dates
-```json
-{
-  "Application Start": "15-01-2026",
-  "Application End": "28-02-2026",
-  "Admit Card": "March 2026",
-  "Exam Date": "15-04-2026"
-}
-```
+## 🐛 Troubleshooting
 
-#### vacancy_details
-```json
-{
-  "Junior Engineer (Civil)": "50 posts",
-  "Junior Engineer (Electrical)": "30 posts",
-  "Junior Engineer (Mechanical)": "20 posts"
-}
-```
-
-### Smart Extraction
-
-- **location**: "Mumbai, Maharashtra" (city + state)
-- **category**: Auto-categorized (UPSC/Railway/SSC/Banking/etc)
-- **vacancies**: Integer (not "150 posts")
-- **dates**: DD-MM-YYYY format
-
-## LLM Options
-
-### Option 1: Ollama Local (Default) ⭐
-
+### Gemma 3 not available
 ```bash
-# Setup
-ollama pull llama3.2:1b
-ollama serve
-
-# Already configured in .env
-OLLAMA_MODEL=llama3.2:1b
-```
-
-**Best for:** Privacy, offline use, free forever
-
-### Option 2: Groq Cloud
-
-```bash
-# Get free key: https://console.groq.com/
-echo "GROQ_API_KEY=gsk_your_key" >> .env
-```
-
-**Best for:** Maximum accuracy (95%+), faster speed
-
-### Option 3: CSS Only
-
-```bash
-echo "USE_LLM_FALLBACK=false" >> .env
-```
-
-**Best for:** Testing only (70-80% accuracy)
-
-## Field Extraction Accuracy
-
-| Field | CSS Only | Ollama 1B | Groq 70B |
-|-------|----------|-----------|----------|
-| title | 98% | 99% | 99% |
-| organization | 95% | 95% | 98% |
-| **application_url** | **60%** | **85%** | **95%** |
-| **salary** | **50%** | **80%** | **90%** |
-| **age_limit** | **45%** | **80%** | **88%** |
-| **important_dates (JSON)** | **0%** | **75%** | **85%** |
-| **vacancy_details (JSON)** | **0%** | **75%** | **85%** |
-
-## Scheduling
-
-### Cron (Linux/Mac)
-
-```bash
-crontab -e
-```
-
-Add:
-```
-# Daily at 9 AM
-0 9 * * * cd /path/to/scraper && ollama serve & sleep 5 && python main.py >> scraper.log 2>&1
-```
-
-### Task Scheduler (Windows)
-
-1. Open Task Scheduler
-2. Create Basic Task
-3. Trigger: Daily at 9:00 AM
-4. Action: Start program
-5. Program: `python`
-6. Arguments: `main.py --max-pages 1`
-7. Start in: `C:\path\to\scraper`
-
-**Note:** Ollama runs as service on Windows (auto-starts)
-
-## Troubleshooting
-
-### Ollama Not Running
-
-```bash
-curl http://localhost:11434/api/tags
-# If fails:
-ollama serve
-```
-
-### Model Not Found
-
-```bash
+# Check Ollama is running
 ollama list
-# If missing:
-ollama pull llama3.2:1b
+
+# Pull model if missing
+ollama pull gemma3:12b
+
+# Test model
+ollama run gemma3:12b "Hello"
 ```
 
-### JSON Parse Errors
-
-Normal for 5-10% of jobs. Model auto-retries or falls back to CSS.
-
-### Slow Performance
-
-Use smaller model:
+### PDF processing fails
 ```bash
-ollama pull llama3.2:1b  # Not 3b
+# Install poppler for pdf2image
+sudo apt-get install poppler-utils  # Ubuntu/Debian
+brew install poppler  # macOS
 ```
 
-## Contributing
+### Supabase connection error
+```bash
+# Check .env file
+cat .env
 
-Contributions welcome! Please:
-1. Fork repository
-2. Create feature branch
-3. Test with Ollama
-4. Submit pull request
+# Verify credentials in Supabase dashboard
+```
 
-## License
+## 📄 License
 
 MIT License
 
-## Support
+## 👤 Author
 
-- 🐛 [Open Issue](https://github.com/Anuj472/freejobalert-scraper/issues)
-- 📖 [Ollama Setup](OLLAMA_SETUP.md)
-- 📖 [Groq Setup](LLM_SETUP.md)
+**Anuj Kumar Mishra**
+- GitHub: [@Anuj472](https://github.com/Anuj472)
 
-## Quick Links
+## 🙏 Acknowledgments
 
-- 🦙 [**Ollama Local Setup**](OLLAMA_LOCAL.md) ⭐ Start Here!
-- 🔧 [Detailed Ollama Guide](OLLAMA_SETUP.md)
-- ☁️ [Groq Cloud Option](LLM_SETUP.md)
-- 🎯 [LLM Always Mode](LLM_ALWAYS_MODE.md)
-
----
-
-**⭐ Quick Start:**
-```bash
-# 1. Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# 2. Pull model
-ollama pull llama3.2:1b
-
-# 3. Start server
-ollama serve &
-
-# 4. Run scraper
-python main.py --max-pages 1
-
-# Done! Enjoy private, free, JSON-structured extraction! 🎉
-```
+- Gemma 3 12B by Google
+- Ollama for local LLM inference
+- Supabase for database
+- FreeJobAlert.com for job listings
