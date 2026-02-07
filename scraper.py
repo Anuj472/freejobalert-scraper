@@ -52,7 +52,7 @@ class FreeJobAlertScraper:
         
         # Initialize robust parser (no LLM)
         self.parser = RobustJobParser()
-        logger.info("✓ Using robust CSS-only parser (no LLM required)")
+        logger.info("[OK] Using robust CSS-only parser (no LLM required)")
     
     def scrape_category(
         self,
@@ -274,11 +274,11 @@ class FreeJobAlertScraper:
             
             # Count extracted fields
             field_count = sum(1 for v in details.values() if v and str(v).strip())
-            logger.info(f"✓ Extracted {field_count} non-empty fields")
+            logger.info(f"[OK] Extracted {field_count} non-empty fields")
             
             # Log vacancies if found
             if details.get('vacancies'):
-                logger.info(f"  ✓ Vacancies: {details['vacancies']}")
+                logger.info(f"  [OK] Vacancies: {details['vacancies']}")
             
             time.sleep(Config.REQUEST_DELAY)
             return details
