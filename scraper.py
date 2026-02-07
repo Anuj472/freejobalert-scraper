@@ -100,7 +100,7 @@ class FreeJobAlertScraper:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
                 # Extract job rows from tables
-                page_jobs = self._extract_jobs_from_tables(soup, category)
+                page_jobs = self._extract_jobs_from_tables(soup)
                 
                 if not page_jobs:
                     logger.info(f"No more jobs found on page {page}")
@@ -120,7 +120,7 @@ class FreeJobAlertScraper:
         logger.info(f"Total jobs scraped from {category}: {len(jobs)}")
         return jobs
     
-    def _extract_jobs_from_tables(self, soup: BeautifulSoup, category: str) -> List[dict]:
+    def _extract_jobs_from_tables(self, soup: BeautifulSoup) -> List[dict]:
         """Extract job listings from tables on the page."""
         jobs = []
         
@@ -157,7 +157,7 @@ class FreeJobAlertScraper:
             # Process data rows (skip first row which is header)
             for row_idx, row in enumerate(rows[1:], start=1):
                 try:
-                    job_data = self._extract_job_from_row(row, category)
+                    job_data = self._extract_job_from_row(row)
                     if job_data:
                         # Validate that this is a real job, not a navigation element
                         if self._is_valid_job(job_data):
@@ -203,8 +203,12 @@ class FreeJobAlertScraper:
         
         return True
     
-    def _extract_job_from_row(self, row, category: str) -> Optional[dict]:
-        """Extract job data from a table row."""
+    def _extract_job_from_row(self, row) -> Optional[dict]:
+        """Extract job data from a table row.
+        
+        IMPORTANT: Does NOT set 'category' field.
+        Category will be determined by LLM based on organization type.
+        """
         cells = row.find_all('td')
         
         # Need at least 6 cells for a valid job row
@@ -249,7 +253,7 @@ class FreeJobAlertScraper:
             'last_date': last_date,
             'advt_no': advt_no,
             'details_url': details_url,
-            'category': category,
+            # DO NOT set 'category' here - let LLM extract it based on organization
             'source': 'freejobalert'
         }
         
@@ -260,8 +264,8 @@ class FreeJobAlertScraper:
         Fetch detailed job information using smart processor.
         
         Priority:
-        1. Try PDF extraction (if available)
-        2. Fallback to HTML parsing
+        1. Try PDF extraction (if available) - includes category extraction
+        2. Fallback to HTML parsing - will use Gemma to extract category
         3. Always generate SEO blog
         
         Args:
@@ -269,7 +273,7 @@ class FreeJobAlertScraper:
             job_listing: Basic job info from listing
         
         Returns:
-            Dictionary with detailed job information + blog content
+            Dictionary with detailed job information + blog content + category
         """
         try:
             logger.info(f"Fetching job details from: {details_url}")
@@ -279,7 +283,7 @@ class FreeJobAlertScraper:
             
             html_content = response.text
             
-            # Use smart processor (PDF-first + blog generation)
+            # Use smart processor (PDF-first + category extraction + blog generation)
             details = self.processor.process_job(job_listing, html_content, details_url)
             
             time.sleep(Config.REQUEST_DELAY)
