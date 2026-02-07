@@ -1,14 +1,17 @@
-"""Smart Job Processor - IMPROVED with link filtering.
+"""Smart Job Processor - IMPROVED with link filtering and post_date extraction.
 
 Architecture:
-1. Priority: Extract CONTENT from PDF using Gemma 3 (no URLs)
-2. Extract LINKS from HTML using CSS parser
+1. Priority: Extract CONTENT from PDF using Gemma 3 (includes location, no URLs, no post_date)
+2. Extract LINKS and POST_DATE from HTML using CSS parser
 3. Filter out FreeJobAlert links
 4. Generate SEO blog using Gemma 3 (concise, <1000 words)
 """
 
 import logging
+import re
 from typing import Dict, Optional
+from datetime import datetime
+from bs4 import BeautifulSoup
 
 from gemma_processor import GemmaProcessor
 from robust_parser import RobustJobParser
@@ -16,7 +19,7 @@ from robust_parser import RobustJobParser
 logger = logging.getLogger(__name__)
 
 class SmartJobProcessor:
-    """Smart processor with PDF priority and link filtering."""
+    """Smart processor with PDF priority, link filtering, and post_date extraction."""
     
     def __init__(self):
         """Initialize processors."""
@@ -54,13 +57,69 @@ class SmartJobProcessor:
         
         return data
     
+    def _extract_post_date_from_html(self, html: str) -> Optional[str]:
+        """Extract article publish date from HTML metadata."""
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Try multiple selectors for post date
+            date_selectors = [
+                'time[datetime]',  # Standard HTML5 time tag
+                'meta[property="article:published_time"]',  # Open Graph
+                'meta[name="publish_date"]',
+                'meta[name="date"]',
+                '.post-date',
+                '.published',
+                '.entry-date',
+                'span.date',
+                'time.published'
+            ]
+            
+            for selector in date_selectors:
+                element = soup.select_one(selector)
+                if element:
+                    # Get datetime attribute or text content
+                    date_str = element.get('datetime') or element.get('content') or element.text
+                    if date_str:
+                        # Try to parse and convert to DD-MM-YYYY
+                        date_str = date_str.strip()
+                        
+                        # Try various date formats
+                        for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S%z', 
+                                   '%d-%m-%Y', '%d/%m/%Y', '%B %d, %Y', '%d %B %Y']:
+                            try:
+                                dt = datetime.strptime(date_str.split('T')[0], fmt.split('T')[0])
+                                return dt.strftime('%d-%m-%Y')
+                            except:
+                                continue
+            
+            # Fallback: Look for date patterns in text
+            date_pattern = r'(\d{1,2}[-/]\d{1,2}[-/]\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})'
+            matches = re.findall(date_pattern, html[:5000])  # Search first 5KB
+            if matches:
+                date_str = matches[0]
+                if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                    # YYYY-MM-DD format
+                    dt = datetime.strptime(date_str, '%Y-%m-%d')
+                    return dt.strftime('%d-%m-%Y')
+                elif re.match(r'\d{1,2}-\d{1,2}-\d{4}', date_str):
+                    # DD-MM-YYYY format (already correct)
+                    return date_str
+            
+            logger.debug("Could not extract post_date from HTML")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error extracting post_date: {e}")
+            return None
+    
     def process_job(self, job_listing: Dict, html: str, details_url: str) -> Dict:
         """
         Process job with smart priority and link filtering.
         
         IMPROVED WORKFLOW:
-        1. PDF extracts CONTENT (job details, no URLs)
-        2. HTML extracts LINKS (application URLs, official website)
+        1. PDF extracts CONTENT (job details, location, NO URLs, NO post_date)
+        2. HTML extracts LINKS + POST_DATE
         3. Filter out FreeJobAlert links
         4. Generate concise blog (<1000 words)
         
@@ -86,10 +145,10 @@ class SmartJobProcessor:
             logger.info(f"✓ PDF URL from FreeJobAlert: {pdf_url[:60]}")
             # Keep it - we'll process PDF but won't save this URL to database
         
-        # PRIORITY 1: Extract CONTENT from PDF using Gemma 3 (no URLs)
+        # PRIORITY 1: Extract CONTENT from PDF using Gemma 3 (includes location, no URLs, no post_date)
         if pdf_url and self.gemma.is_available():
-            logger.info(f"🎯 Priority 1: Extracting CONTENT from PDF with Gemma 3")
-            logger.info(f"   (URLs will be extracted from HTML separately)")
+            logger.info(f"🎯 Priority 1: Extracting CONTENT (with location) from PDF")
+            logger.info(f"   (URLs and post_date will be extracted from HTML)")
             
             structured_data = self.gemma.process_pdf_url(pdf_url)
             
@@ -97,12 +156,18 @@ class SmartJobProcessor:
                 source = 'pdf_gemma3'
                 logger.info(f"✓ Successfully extracted content from PDF")
                 logger.info(f"   Extracted {len(structured_data)} fields")
+                
+                # Log if location was extracted
+                if structured_data.get('location'):
+                    logger.info(f"   ✓ Location extracted: {structured_data['location']}")
+                else:
+                    logger.warning(f"   ⚠️ Location not found in PDF")
             else:
                 logger.warning("⚠️  PDF extraction failed, falling back to HTML parser")
         elif pdf_url:
             logger.info(f"⚠️  PDF found but Gemma 3 not available")
         
-        # PRIORITY 2: Extract from HTML (includes links)
+        # PRIORITY 2: Extract from HTML (includes links + post_date)
         if not structured_data:
             logger.info(f"📄 Priority 2: Extracting from HTML using CSS parser")
             structured_data = self.html_parser.parse_job_details(html, details_url)
@@ -113,8 +178,8 @@ class SmartJobProcessor:
                 logger.info(f"✓ Successfully extracted from HTML")
                 logger.info(f"   Extracted {non_empty} non-empty fields")
         else:
-            # PDF gave us content, HTML gives us links
-            logger.info(f"📄 Extracting organization LINKS from HTML...")
+            # PDF gave us content, HTML gives us links + post_date
+            logger.info(f"📄 Extracting LINKS and POST_DATE from HTML...")
             html_links = self.html_parser.parse_job_details(html, details_url)
             
             # Merge links from HTML (only if not already present)
@@ -124,6 +189,15 @@ class SmartJobProcessor:
                 if html_value and not structured_data.get(field):
                     structured_data[field] = html_value
                     logger.info(f"   + Added {field} from HTML: {html_value[:50]}...")
+        
+        # ALWAYS extract post_date from HTML (article publish date)
+        logger.info(f"📅 Extracting post_date (article date) from HTML...")
+        post_date = self._extract_post_date_from_html(html)
+        if post_date:
+            structured_data['post_date'] = post_date
+            logger.info(f"   ✓ Post date extracted: {post_date}")
+        else:
+            logger.warning(f"   ⚠️ Could not extract post_date from HTML")
         
         # Clean FreeJobAlert links from extracted data
         structured_data = self._clean_links(structured_data)
@@ -135,7 +209,11 @@ class SmartJobProcessor:
         # Final cleanup - ensure no FreeJobAlert links in final data
         final_data = self._clean_links(final_data)
         
-        # Log final URLs
+        # Log final important fields
+        if final_data.get('location'):
+            logger.info(f"✓ Final Location: {final_data['location']}")
+        if final_data.get('post_date'):
+            logger.info(f"✓ Final Post Date: {final_data['post_date']}")
         if final_data.get('application_url'):
             logger.info(f"✓ Application URL: {final_data['application_url'][:60]}...")
         if final_data.get('official_website'):
