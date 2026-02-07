@@ -135,9 +135,10 @@ class SupabaseClient:
             post_date = self._parse_date(job_data.get('post_date'))
             last_date = self._parse_date(job_data.get('last_date'))
             
-            # Extract vacancies count from title or vacancy_details
-            vacancies = None
-            if job_data.get('title'):
+            # Extract vacancies count - use parser's value if available, else parse from title
+            vacancies = job_data.get('vacancies')  # Use parser's value first
+            if vacancies is None and job_data.get('title'):
+                # Only parse from title if parser didn't extract it
                 vacancies = self._parse_vacancies(job_data['title'])
             
             # Build insert data with all schema fields
