@@ -163,63 +163,88 @@ Questions to answer:
 2. What is the EXACT organization/department/commission name?
    Example: "Indian Railways", "State Bank of India", "UPSC"
 
-3. How many TOTAL vacancies are there? (INTEGER count, NOT year)
+3. **IMPORTANT: What CATEGORY does this job belong to?**
+   Based on the organization type, choose the MOST APPROPRIATE category:
+   
+   - "banking" - If organization is: SBI, IBPS, RBI, Bank of India, Canara Bank, PNB, any bank
+   - "defence" - If organization is: Indian Army, Navy, Air Force, DRDO, OTA, NDA, Coast Guard
+   - "railway" - If organization is: Indian Railways, RRB, Railway Recruitment Board, IRCTC
+   - "ssc" - If organization is: Staff Selection Commission, SSC
+   - "upsc" - If organization is: Union Public Service Commission, UPSC
+   - "police" - If organization is: Police Department, State Police, Central Police
+   - "teaching" - If organization is: University, School, Education Department, UGC, NCERT
+   - "psu" - If organization is: NTPC, ONGC, SAIL, BHEL, Coal India, any PSU
+   - "state-govt" - If organization is: State Government Department (not railway/police)
+   - "central-govt" - If organization is: Central Government Department (not SSC/UPSC/Railway)
+   - "admit-card" - If document is about admit card
+   - "result" - If document is about result/answer key
+   - "answer-key" - If document is about answer key
+   
+   Examples:
+   - "Union Public Service Commission" → category: "upsc"
+   - "State Bank of India" → category: "banking"
+   - "Indian Railways" → category: "railway"
+   - "Indian Army" → category: "defence"
+   - "Staff Selection Commission" → category: "ssc"
+
+4. How many TOTAL vacancies are there? (INTEGER count, NOT year)
    Look for: "Total Posts", "Total Vacancies", numbers in tables
    Example: 150 (not 2026)
 
-4. What is the advertisement/notification number?
+5. What is the advertisement/notification number?
    Example: "Advt. No. 01/2026", "Notification No. 12345"
 
-5. What is the LAST DATE to apply? (Application deadline, NOT notification date)
+6. What is the LAST DATE to apply? (Application deadline, NOT notification date)
    Look for: "Last Date", "Closing Date", "Apply By"
    Format: DD-MM-YYYY
    Example: "15-02-2026"
 
-6. What is the salary or pay scale mentioned?
+7. What is the salary or pay scale mentioned?
    Example: "Rs. 25,000 - 50,000", "Level 7, Rs. 44,900"
 
-7. What is the age limit for applicants?
+8. What is the age limit for applicants?
    Example: "21-30 years", "18-35 years as on 01-01-2026"
 
-8. What educational qualification is required?
+9. What educational qualification is required?
    Example: "Bachelor's Degree in Engineering", "10th Pass", "Graduate"
 
-9. **IMPORTANT: What is the job location or posting place?**
-   Look carefully for: "Place of Posting", "Location", "Work Location", "Job Station"
-   - Check if it mentions specific cities: Delhi, Mumbai, Bangalore, etc.
-   - Check if it mentions states: Maharashtra, Karnataka, UP, etc.
-   - Check if it mentions regions: North India, South India, All India
-   - Look in vacancy tables for location columns
-   Example: "New Delhi", "Mumbai, Maharashtra", "All India", "Various locations across India"
+10. **IMPORTANT: What is the job location or posting place?**
+    Look carefully for: "Place of Posting", "Location", "Work Location", "Job Station"
+    - Check if it mentions specific cities: Delhi, Mumbai, Bangalore, etc.
+    - Check if it mentions states: Maharashtra, Karnataka, UP, etc.
+    - Check if it mentions regions: North India, South India, All India
+    - Look in vacancy tables for location columns
+    Example: "New Delhi", "Mumbai, Maharashtra", "All India", "Various locations across India"
 
-10. What is the application fee for different categories?
-    Example: {{"General/OBC": "Rs. 500", "SC/ST/PH": "Rs. 250", "Women": "Rs. 250"}}
+11. What is the application fee for different categories?
+     Example: {{"General/OBC": "Rs. 500", "SC/ST/PH": "Rs. 250", "Women": "Rs. 250"}}
 
-11. What is the selection process or exam pattern?
-    Example: "Written Exam + Interview", "CBT + Physical Test"
+12. What is the selection process or exam pattern?
+     Example: "Written Exam + Interview", "CBT + Physical Test"
 
-12. How should candidates apply? (Step-by-step instructions from document)
-    Example: "Apply online through official website"
+13. How should candidates apply? (Step-by-step instructions from document)
+     Example: "Apply online through official website"
 
-13. Important dates mentioned?
-    - Application start date? (DD-MM-YYYY)
-    - Application end date / Last date? (DD-MM-YYYY)
-    - Exam date if mentioned? (DD-MM-YYYY)
+14. Important dates mentioned?
+     - Application start date? (DD-MM-YYYY)
+     - Application end date / Last date? (DD-MM-YYYY)
+     - Exam date if mentioned? (DD-MM-YYYY)
 
-14. Is there a post-wise vacancy breakdown in tables?
-    Example: {{"Engineer": "50", "Assistant": "100"}}
+15. Is there a post-wise vacancy breakdown in tables?
+     Example: {{"Engineer": "50", "Assistant": "100"}}
 
 Return ONLY this JSON structure:
 {{
     "title": "Exact job title from document",
     "organization": "Exact organization name",
+    "category": "banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt",
     "vacancies": 120,
     "advt_no": "Advertisement number",
     "last_date": "DD-MM-YYYY",
     "salary": "Pay scale details",
     "age_limit": "Age requirement",
     "qualification": "Educational qualification",
-    "location": "Job location with city/state (IMPORTANT - extract carefully)",
+    "location": "Job location with city/state",
     "application_fee": {{"General": "Rs. X", "SC/ST": "Nil"}},
     "selection_process": "Exam/selection method",
     "how_to_apply": "Application instructions",
@@ -237,8 +262,9 @@ Return ONLY this JSON structure:
 REMEMBER:
 - NO URLs or links
 - NO post_date field
+- Category = Based on organization type (banking/defence/railway/ssc/upsc/etc.)
 - Vacancies = INTEGER count
-- Location = MUST extract carefully (city/state/region)
+- Location = MUST extract carefully
 - last_date = Application deadline only
 - Dates = DD-MM-YYYY
 - null if not found
@@ -280,53 +306,66 @@ Questions:
 
 2. What is the EXACT organization/department name?
 
-3. How many TOTAL vacancies? (Look in tables, count INTEGER only, NOT year)
+3. **CRITICAL: What CATEGORY does this job belong to?**
+   Look at the organization name/logo and determine the category:
+   
+   - "banking" - Banks: SBI, IBPS, RBI, PNB, Bank of India, etc.
+   - "defence" - Armed Forces: Army, Navy, Air Force, DRDO, NDA, etc.
+   - "railway" - Indian Railways, RRB, Railway Recruitment Board
+   - "ssc" - Staff Selection Commission
+   - "upsc" - Union Public Service Commission
+   - "police" - Police Department, State/Central Police
+   - "teaching" - Universities, Schools, Education Dept
+   - "psu" - PSUs: NTPC, ONGC, SAIL, BHEL, etc.
+   - "state-govt" - State Government Departments
+   - "central-govt" - Central Government Departments
+   - "admit-card" - If this is an admit card document
+   - "result" - If this is a result document
+   
+   Choose the MOST APPROPRIATE category based on what you see.
 
-4. What is the notification/advertisement number?
+4. How many TOTAL vacancies? (Look in tables, INTEGER count only, NOT year)
 
-5. What is the LAST DATE to apply? (Application deadline only, NOT notification date)
+5. What is the notification/advertisement number?
+
+6. What is the LAST DATE to apply? (Application deadline, NOT notification date)
    Format: DD-MM-YYYY
 
-6. Salary or pay scale?
+7. Salary or pay scale?
 
-7. Age limit for applicants?
+8. Age limit for applicants?
 
-8. Educational qualification required?
+9. Educational qualification required?
 
-9. **CRITICAL: What is the job LOCATION?**
-   Look VERY carefully in the document for:
-   - "Place of Posting" section
-   - "Location" or "Work Station" mentioned
-   - City names: Delhi, Mumbai, Bangalore, Chennai, Kolkata, etc.
-   - State names: Maharashtra, Karnataka, Tamil Nadu, UP, etc.
-   - Phrases like "All India", "Pan India", "Various Locations"
-   - Location columns in vacancy tables
-   Extract the EXACT location text you see
+10. **CRITICAL: What is the job LOCATION?**
+    Look for: Place of Posting, Location, Work Station
+    Extract city/state/region mentioned
 
-10. Application fee by category?
+11. Application fee by category?
 
-11. Selection process or exam pattern?
+12. Selection process or exam pattern?
 
-12. How to apply? (Steps visible in document)
+13. How to apply? (Steps visible)
 
-13. Important dates visible:
-    - Application start? (DD-MM-YYYY)
-    - Last date? (DD-MM-YYYY)
-    - Exam date? (DD-MM-YYYY)
+14. Important dates:
+     - Application start? (DD-MM-YYYY)
+     - Last date? (DD-MM-YYYY)
+     - Exam date? (DD-MM-YYYY)
 
-14. Post-wise vacancy breakdown from tables?
+15. Post-wise vacancy breakdown?
 
 Return ONLY this JSON:
 {
     "title": "Exact job title",
     "organization": "Exact organization name",
+    "category": "banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt",
     "vacancies": 100,
     "advt_no": "Notification number",
     "last_date": "DD-MM-YYYY",
     "salary": "Pay scale",
     "age_limit": "Age requirement",
     "qualification": "Education required",
-    "location": "Job location/posting place (MUST extract - check document carefully)",
+    "location": "Job location/posting place",
     "application_fee": {"General": "Rs. X", "SC/ST": "Nil"},
     "selection_process": "Selection method",
     "how_to_apply": "Application steps",
@@ -344,8 +383,9 @@ Return ONLY this JSON:
 REMEMBER:
 - NO URLs
 - NO post_date
-- Vacancies = INTEGER count from tables
-- Location = MUST find and extract (very important!)
+- Category = Based on organization (banking/defence/railway/etc.)
+- Vacancies = INTEGER count
+- Location = MUST extract
 - last_date = Application deadline
 - Dates = DD-MM-YYYY
 - null if not visible
