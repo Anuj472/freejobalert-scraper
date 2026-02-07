@@ -27,7 +27,7 @@ class FreeJobAlertScraper:
     OPTIONAL_FIELDS = {
         'salary', 'age_limit', 'application_fee', 'selection_process',
         'how_to_apply', 'location', 'official_website', 'application_url',
-        'official_notification_pdf'
+        'official_notification_pdf', 'qualification', 'vacancies'
     }
     
     def __init__(self):
@@ -63,6 +63,8 @@ class FreeJobAlertScraper:
                 self.llm_parser = JobLLMParser()
                 if self.llm_parser.is_available():
                     logger.info("✓ LLM parser initialized and available")
+                    if Config.LLM_ALWAYS_ENABLED:
+                        logger.info("✓ LLM_ALWAYS_ENABLED: Will use LLM for all jobs for consistent data quality")
                 else:
                     logger.warning("⚠️  LLM parser initialized but no provider available")
                     self.llm_parser = None
@@ -95,6 +97,12 @@ class FreeJobAlertScraper:
         if not self.llm_parser or not Config.USE_LLM_FALLBACK:
             return False
         
+        # Always use LLM if enabled (for consistent high-quality data)
+        if Config.LLM_ALWAYS_ENABLED:
+            logger.debug("LLM always enabled - will enhance all fields")
+            return True
+        
+        # Fallback mode: Only use LLM if fields are missing
         # Use LLM if ANY critical field is missing
         if len(missing_fields['critical']) > 0:
             return True
@@ -106,7 +114,7 @@ class FreeJobAlertScraper:
         return False
     
     def _merge_llm_data(self, css_data: Dict, llm_data: Dict) -> Dict:
-        """Merge LLM extracted data with CSS data (CSS takes precedence)."""
+        """Merge LLM extracted data with CSS data (CSS takes precedence for non-empty values)."""
         result = css_data.copy()
         
         for key, value in llm_data.items():
@@ -115,6 +123,12 @@ class FreeJobAlertScraper:
                 if value and (not isinstance(value, str) or len(value.strip()) >= 3):
                     result[key] = value
                     logger.debug(f"  ✓ Using LLM value for {key}: {str(value)[:60]}")
+            # If LLM provides better data, prefer it
+            elif isinstance(result[key], str) and isinstance(value, str):
+                # LLM value is longer and more detailed, use it
+                if len(value.strip()) > len(result[key].strip()) * 1.5:
+                    result[key] = value
+                    logger.debug(f"  ✓ LLM provided better {key}: {str(value)[:60]}")
         
         return result
     
@@ -322,7 +336,7 @@ class FreeJobAlertScraper:
     def get_job_details(self, details_url: str) -> Optional[dict]:
         """
         Fetch detailed job information from the job details page.
-        Uses CSS selectors first, then LLM fallback for missing fields.
+        Uses CSS selectors first, then LLM enhancement for all fields or missing fields.
         
         Args:
             details_url: URL of the job details page
@@ -351,14 +365,20 @@ class FreeJobAlertScraper:
             if missing['critical']:
                 logger.info(f"⚠️  Missing critical: {', '.join(missing['critical'])}")
             if missing['optional']:
-                logger.debug(f"Missing optional: {', '.join(missing['optional'])}")
+                logger.debug(f"Missing optional: {', '.join(missing['optional'][:5])}...")
             
             # Step 3: Use LLM if needed
             if self._should_use_llm(missing):
-                logger.info(f"🤖 LLM fallback triggered: {len(missing['critical'])} critical + {len(missing['optional'])} optional fields missing")
-                
-                fields_to_extract = missing['critical'] + missing['optional']
-                llm_data = self.llm_parser.parse_missing_fields(html_content, fields_to_extract)
+                if Config.LLM_ALWAYS_ENABLED:
+                    # Extract ALL fields for consistent data quality
+                    logger.info("🤖 Using LLM to enhance ALL fields (LLM_ALWAYS_ENABLED)")
+                    all_fields = list(self.CRITICAL_FIELDS) + list(self.OPTIONAL_FIELDS)
+                    llm_data = self.llm_parser.parse_missing_fields(html_content, all_fields)
+                else:
+                    # Only extract missing fields (fallback mode)
+                    logger.info(f"🤖 LLM fallback triggered: {len(missing['critical'])} critical + {len(missing['optional'])} optional fields missing")
+                    fields_to_extract = missing['critical'] + missing['optional']
+                    llm_data = self.llm_parser.parse_missing_fields(html_content, fields_to_extract)
                 
                 if llm_data:
                     details = self._merge_llm_data(details, llm_data)
