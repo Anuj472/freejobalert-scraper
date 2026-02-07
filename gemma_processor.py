@@ -10,101 +10,140 @@ import requests
 import json
 import logging
 import base64
-from io import BytesIO
+import os
 from pathlib import Path
+from io import BytesIO
 from typing import Dict, List, Optional
-import PyPDF2
-from pdf2image import convert_from_bytes
+
+try:
+    from pdf2image import convert_from_path
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+    logging.warning("pdf2image not installed. Image PDF processing will be disabled.")
+
+try:
+    import PyPDF2
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
+    logging.warning("PyPDF2 not installed. Text PDF processing will be disabled.")
+
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-class Gemma3Processor:
+class GemmaProcessor:
     """Process PDFs and generate blogs using Gemma 3 12B multimodal model."""
     
     def __init__(self):
-        """Initialize Gemma 3 processor."""
-        self.ollama_url = "http://localhost:11434"
+        """Initialize Gemma 3 12B processor."""
+        self.ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
         self.model = "gemma3:12b"
-        self.available = self._check_availability()
+        self.temp_dir = Path('temp_pdfs')
+        self.temp_dir.mkdir(exist_ok=True)
         
-        if self.available:
+        # Check if Gemma 3 is available
+        if self._check_model_available():
             logger.info(f"✓ {self.model} initialized")
-            logger.info(f"  - Vision: ✓ (for scanned PDFs)")
-            logger.info(f"  - Text: ✓ (for text PDFs)")
+            logger.info(f"  - Vision: ✓")
             logger.info(f"  - Context: 128K tokens")
-            logger.info(f"  - VRAM: ~8GB")
+            logger.info(f"  - VRAM: 8.1 GB")
+        else:
+            logger.warning(f"⚠️  {self.model} not found!")
+            logger.warning(f"   Run: ollama pull {self.model}")
     
-    def _check_availability(self) -> bool:
+    def _check_model_available(self) -> bool:
         """Check if Gemma 3 model is available."""
         try:
-            response = requests.get(f"{self.ollama_url}/api/tags", timeout=2)
+            response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
             if response.status_code == 200:
                 models = [m['name'] for m in response.json().get('models', [])]
-                if self.model in models:
-                    return True
-                else:
-                    logger.warning(f"⚠️  {self.model} not found")
-                    logger.warning(f"   Install with: ollama pull {self.model}")
-                    return False
-        except Exception as e:
-            logger.warning(f"⚠️  Ollama not available: {e}")
-            logger.warning(f"   Install: curl -fsSL https://ollama.com/install.sh | sh")
-            return False
+                return self.model in models
+        except:
+            pass
+        return False
     
     def is_available(self) -> bool:
-        """Check if processor is ready to use."""
-        return self.available
+        """Check if processor is available."""
+        return self._check_model_available()
     
     def process_pdf_url(self, pdf_url: str) -> Optional[Dict]:
         """
-        Download and process PDF (text or image) using Gemma 3.
+        Download and process PDF using Gemma 3.
+        Handles both text and image PDFs.
         
         Args:
-            pdf_url: URL of PDF to process
+            pdf_url: URL of the PDF file
             
         Returns:
-            Dictionary with extracted job data
+            Extracted job data dictionary or None
         """
-        if not self.available:
+        if not self.is_available():
+            logger.warning("Gemma 3 not available, skipping PDF processing")
             return None
         
         try:
-            # Download PDF
             logger.info(f"📥 Downloading PDF: {pdf_url[:60]}...")
+            
+            # Download PDF
             response = requests.get(pdf_url, timeout=30, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
             response.raise_for_status()
             
-            pdf_bytes = response.content
+            pdf_bytes = BytesIO(response.content)
             
             # Try text extraction first (fast path)
-            logger.info("🔍 Checking if PDF is text-based...")
-            text = self._extract_text_from_pdf(pdf_bytes)
+            if PYPDF2_AVAILABLE:
+                text_data = self._try_text_extraction(pdf_bytes)
+                if text_data and len(text_data) > 500:
+                    logger.info("📄 Text PDF detected, extracting with Gemma 3...")
+                    return self._extract_from_text(text_data)
             
-            if text and len(text) > 500:
-                # Text PDF - use Gemma 3 with text
-                logger.info(f"📄 Text PDF detected ({len(text)} chars), processing with Gemma 3...")
-                return self._extract_from_text(text)
-            else:
-                # Scanned/Image PDF - use Gemma 3 vision
+            # Convert to images for vision processing
+            if PDF2IMAGE_AVAILABLE:
                 logger.info("🖼️  Image/Scanned PDF detected, using Gemma 3 Vision...")
-                return self._extract_from_images(pdf_bytes)
-        
+                pdf_bytes.seek(0)
+                
+                # Save temporarily
+                temp_pdf = self.temp_dir / f'temp_{hash(pdf_url)}.pdf'
+                with open(temp_pdf, 'wb') as f:
+                    f.write(pdf_bytes.read())
+                
+                # Convert to images
+                images = convert_from_path(
+                    temp_pdf,
+                    dpi=200,
+                    fmt='jpeg',
+                    first_page=1,
+                    last_page=3  # Process first 3 pages
+                )
+                
+                logger.info(f"✓ Converted {len(images)} pages to images")
+                
+                # Extract with vision
+                result = self._extract_from_images(images)
+                
+                # Cleanup
+                temp_pdf.unlink()
+                
+                return result
+            else:
+                logger.warning("pdf2image not available, cannot process image PDFs")
+                return None
+                
         except Exception as e:
             logger.error(f"Error processing PDF: {e}")
             return None
     
-    def _extract_text_from_pdf(self, pdf_bytes: bytes) -> Optional[str]:
-        """Extract text from PDF if it's text-based."""
+    def _try_text_extraction(self, pdf_bytes: BytesIO) -> Optional[str]:
+        """Try extracting text from PDF."""
         try:
-            pdf_file = BytesIO(pdf_bytes)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            
+            pdf_reader = PyPDF2.PdfReader(pdf_bytes)
             text = ""
-            for page in pdf_reader.pages[:10]:  # First 10 pages
-                text += page.extract_text() or ""
-            
+            for page in pdf_reader.pages[:5]:  # First 5 pages
+                text += page.extract_text()
             return text if len(text) > 100 else None
         except:
             return None
@@ -112,27 +151,27 @@ class Gemma3Processor:
     def _extract_from_text(self, text: str) -> Optional[Dict]:
         """Extract structured data from text PDF using Gemma 3."""
         
-        prompt = f"""Extract job recruitment information from this official notification document.
+        prompt = f"""Extract job recruitment information from this official notification.
 
-DOCUMENT TEXT:
+NOTIFICATION TEXT:
 {text[:50000]}
 
-Extract and return ONLY valid JSON with these fields:
+Return ONLY valid JSON with these fields:
 {{
-    "title": "Full job title",
+    "title": "Complete job title",
     "organization": "Organization/Department name",
     "vacancies": 120,
     "post_date": "DD-MM-YYYY",
     "last_date": "DD-MM-YYYY",
-    "salary": "Pay scale details",
+    "salary": "Pay scale with amount",
     "age_limit": "Age requirement",
     "qualification": "Educational qualification required",
     "location": "Job location with state",
-    "application_fee": {{"General/OBC": "Rs. 100", "SC/ST/Women": "Nil"}},
+    "application_fee": {{"General/OBC": "Rs. 100", "SC/ST": "Nil"}},
     "advt_no": "Advertisement/Notification number",
     "application_url": "Online application URL",
     "official_website": "Organization website URL",
-    "selection_process": "Selection/examination method",
+    "selection_process": "Selection/exam process",
     "how_to_apply": "Application instructions",
     "important_dates": {{
         "Application Start": "DD-MM-YYYY",
@@ -146,46 +185,46 @@ Extract and return ONLY valid JSON with these fields:
 
 CRITICAL RULES:
 1. vacancies MUST be INTEGER (total count, not year)
-2. Dates in DD-MM-YYYY format
-3. Extract exact values from document
+2. Dates in DD-MM-YYYY format only
+3. Extract exact values from text
 4. Use null for fields not found
-5. Return ONLY valid JSON
+5. Return ONLY valid JSON, no markdown
 
 JSON OUTPUT:"""
 
         return self._call_gemma(prompt, images=None)
     
-    def _extract_from_images(self, pdf_bytes: bytes) -> Optional[Dict]:
-        """Extract from scanned/image PDF using Gemma 3 Vision."""
+    def _extract_from_images(self, images: List) -> Optional[Dict]:
+        """Extract structured data from PDF images using Gemma 3 Vision."""
         
-        try:
-            # Convert PDF to images (first 3 pages usually have all info)
-            logger.info("📸 Converting PDF pages to images...")
-            images = convert_from_bytes(
-                pdf_bytes,
-                dpi=200,
-                fmt='jpeg',
-                first_page=1,
-                last_page=3  # First 3 pages
-            )
-            
-            logger.info(f"✓ Converted {len(images)} pages to images")
-            
-            # Convert images to base64
-            images_base64 = []
-            for img in images:
-                buffered = BytesIO()
-                img.save(buffered, format="JPEG", quality=85)
-                img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-                images_base64.append(img_base64)
-            
-            prompt = """Extract ALL job recruitment information from these scanned document images.
+        # Convert images to base64
+        images_base64 = []
+        for img in images:
+            buffered = BytesIO()
+            img.save(buffered, format="JPEG", quality=85)
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            images_base64.append(img_base64)
+        
+        prompt = """Analyze these scanned government job notification document images and extract ALL information.
 
-Read the document carefully and extract complete details including tables, dates, and vacancy breakdown.
+Extract:
+- Job title and organization name
+- Total number of vacancies (COUNT as integer, not year)
+- Important dates (application start, end, exam date)
+- Salary/pay scale
+- Age limit
+- Educational qualification required
+- Job location
+- Application fee by category
+- Selection process
+- Application instructions
+- Vacancy breakdown by post
+- Advertisement/notification number
+- URLs if shown
 
 Return ONLY valid JSON:
 {
-    "title": "Full job title from document",
+    "title": "Complete job title from document",
     "organization": "Organization/Department name",
     "vacancies": 120,
     "post_date": "DD-MM-YYYY",
@@ -193,13 +232,13 @@ Return ONLY valid JSON:
     "salary": "Pay scale",
     "age_limit": "Age requirement",
     "qualification": "Educational qualification",
-    "location": "Job location",
+    "location": "Location with state",
     "application_fee": {"General": "Rs. 100", "SC/ST": "Nil"},
     "advt_no": "Advertisement number",
-    "application_url": "Apply URL",
-    "official_website": "Organization website",
+    "application_url": "Apply URL if shown",
+    "official_website": "Organization website if shown",
     "selection_process": "Selection method",
-    "how_to_apply": "Application instructions",
+    "how_to_apply": "Application procedure",
     "important_dates": {
         "Application Start": "DD-MM-YYYY",
         "Application End": "DD-MM-YYYY",
@@ -211,92 +250,84 @@ Return ONLY valid JSON:
 }
 
 CRITICAL:
-- vacancies is INTEGER (total count, NOT year like 2026)
-- Read tables carefully for vacancy details
-- Extract exact dates from document
-- Return ONLY valid JSON
+- vacancies = INTEGER total count (NOT year like 2026)
+- Read tables carefully
+- Extract dates in DD-MM-YYYY format
+- null for missing fields
+- Return ONLY JSON, no markdown
 
 JSON OUTPUT:"""
 
-            return self._call_gemma(prompt, images=images_base64)
-        
-        except Exception as e:
-            logger.error(f"Error extracting from images: {e}")
-            return None
+        return self._call_gemma(prompt, images=images_base64)
     
     def generate_blog(self, job_data: Dict) -> Optional[Dict]:
-        """
-        Generate SEO-optimized blog using Gemma 3.
+        """Generate SEO-optimized blog from job data using Gemma 3."""
         
-        Args:
-            job_data: Structured job data
-            
-        Returns:
-            Dictionary with blog content
-        """
-        if not self.available:
+        if not self.is_available():
+            logger.warning("Gemma 3 not available, skipping blog generation")
             return None
         
-        prompt = f"""You are an expert SEO content writer for a job portal. Create a comprehensive, engaging blog post about this job opportunity.
+        prompt = f"""Create a comprehensive, SEO-optimized blog post for this job recruitment.
 
 JOB DATA:
 {json.dumps(job_data, indent=2)}
 
-Generate a complete blog post with:
+Generate a professional blog post with:
 
 1. **SEO Title** (60-70 characters, include year and vacancy count)
-2. **Meta Description** (150-160 characters, compelling call-to-action)
-3. **Full Article** (800-1000 words) in Markdown format with:
+2. **Meta Description** (150-160 characters, compelling and informative)
+3. **Full Article** (800-1000 words in markdown format) with sections:
    - Brief Overview (2-3 sentences)
-   - Key Highlights (5-7 bullet points with emojis: 🎯 📅 💰 🎓 📍)
-   - Important Dates (table format)
-   - Vacancy Details (table if available)
-   - Eligibility Criteria (age, qualification)
+   - Key Highlights (5-7 bullet points with emojis like 🎯 📅 💰 🎓)
+   - Important Dates (markdown table)
+   - Vacancy Details/Post-wise Breakdown (if available)
+   - Eligibility Criteria (qualification, age limit)
    - Salary & Benefits
-   - Application Fee (table by category)
+   - Application Fee
    - Selection Process
    - How to Apply (step-by-step)
-   - Important Links (with clear labels)
-   - Frequently Asked Questions (5-7 FAQs)
+   - Important Links (official website, application, PDF)
+   - Frequently Asked Questions (5-7 relevant FAQs)
 
-4. **Highlights Array** (5 one-liner key points)
-5. **FAQs Array** (question-answer pairs)
+4. **Highlights** (Array of 5 concise one-liner highlights)
+5. **FAQs** (Array of 5-7 Q&A pairs)
 
-Return JSON:
+REQUIREMENTS:
+- Write in clear, professional, helpful tone
+- Use markdown headings (##, ###)
+- Add relevant emojis for engagement
+- Natural keyword placement for SEO
+- Make it informative and user-friendly
+- Include all important details
+- Add actionable advice in FAQs
+
+Return ONLY valid JSON:
 {{
-    "seo_title": "Job Title Year - Apply Online for X Posts",
-    "meta_description": "Compelling 150-char description...",
-    "article": "# Full Blog Title\\n\\n## Overview\\n...full markdown content...",
+    "seo_title": "Job Title Year - Apply for X Posts",
+    "meta_description": "Complete details about...",
+    "article": "Full markdown blog post content...",
     "highlights": [
-        "📌 Total Posts: X",
-        "📅 Last Date: DD Month YYYY",
-        "💰 Salary: Rs. X - Y",
-        "🎓 Qualification: ...",
-        "📍 Location: ..."
+        "Total Posts: X",
+        "Last Date: DD-MM-YYYY",
+        "Salary: Rs. X-Y",
+        "Qualification: ...",
+        "Apply Mode: Online/Offline"
     ],
     "faqs": [
-        {{"question": "What is the last date to apply?", "answer": "..."}},
-        {{"question": "What is the application fee?", "answer": "..."}},
-        {{"question": "What is the selection process?", "answer": "..."}},
-        {{"question": "What is the age limit?", "answer": "..."}},
-        {{"question": "How to apply online?", "answer": "..."}}
+        {{
+            "question": "What is the last date to apply?",
+            "answer": "The last date..."
+        }},
+        ...
     ]
 }}
 
-REQUIREMENTS:
-- Use markdown headings (##, ###)
-- Add relevant emojis for engagement
-- Include tables where appropriate
-- Natural keyword placement
-- Clear, helpful tone
-- SEO optimized for Google
-
-Return ONLY valid JSON:"""
+JSON OUTPUT:"""
 
         return self._call_gemma(prompt, images=None, for_blog=True)
     
     def _call_gemma(self, prompt: str, images: Optional[List[str]] = None, for_blog: bool = False) -> Optional[Dict]:
-        """Call Gemma 3 model (with or without images)."""
+        """Call Gemma 3 12B model."""
         
         try:
             messages = [{
@@ -304,7 +335,7 @@ Return ONLY valid JSON:"""
                 "content": prompt
             }]
             
-            # Add images if provided (for vision tasks)
+            # Add images if provided
             if images:
                 messages[0]["images"] = images
             
@@ -331,22 +362,22 @@ Return ONLY valid JSON:"""
                 content = content.strip()
                 if content.startswith('```json'):
                     content = content[7:]
+                if content.startswith('```'):
+                    content = content[3:]
                 if content.endswith('```'):
                     content = content[:-3]
                 content = content.strip()
                 
                 data = json.loads(content)
-                
-                task_type = "blog" if for_blog else ("vision extraction" if images else "text extraction")
-                logger.info(f"✓ Gemma 3 {task_type} successful")
-                
+                logger.info(f"✓ Gemma 3 extracted {len(data)} fields")
                 return data
             else:
                 logger.error(f"Gemma 3 API error: {response.status_code}")
                 return None
-        
+                
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemma 3 JSON response: {e}")
+            logger.error(f"JSON parse error: {e}")
+            logger.debug(f"Response content: {content[:200] if 'content' in locals() else 'N/A'}")
             return None
         except Exception as e:
             logger.error(f"Gemma 3 call failed: {e}")
