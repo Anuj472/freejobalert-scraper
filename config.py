@@ -22,8 +22,11 @@ class Config:
     OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Local model
     OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')  # Ollama server
     
-    # LLM Fallback Strategy
+    # LLM Strategy
     USE_LLM_FALLBACK = os.getenv('USE_LLM_FALLBACK', 'true').lower() == 'true'
+    LLM_ALWAYS_ENABLED = os.getenv('LLM_ALWAYS_ENABLED', 'true').lower() == 'true'  # NEW: Use LLM for all jobs
+    
+    # Fallback thresholds (only used if LLM_ALWAYS_ENABLED=false)
     LLM_CRITICAL_FIELDS = ['title', 'organization', 'last_date', 'application_url']  # Must extract
     LLM_OPTIONAL_THRESHOLD = 3  # Use LLM if more than N optional fields missing
     
@@ -91,6 +94,8 @@ class Config:
             logger = logging.getLogger(__name__)
             logger.warning('GROQ_API_KEY not set - LLM fallback will use Ollama if available')
             logger.info('Get free Groq API key: https://console.groq.com/')
+            if Config.LLM_ALWAYS_ENABLED:
+                logger.info('LLM_ALWAYS_ENABLED=true: LLM will be used for all jobs for best data quality')
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
