@@ -339,6 +339,9 @@ JSON OUTPUT:"""
             if images:
                 messages[0]["images"] = images
             
+            # Dynamic timeout based on task
+            timeout = 300 if for_blog else 120  # 5 minutes for blog, 2 minutes for extraction
+            
             response = requests.post(
                 f"{self.ollama_url}/api/chat",
                 json={
@@ -352,7 +355,7 @@ JSON OUTPUT:"""
                         "num_ctx": 128000  # Use full 128K context
                     }
                 },
-                timeout=120
+                timeout=timeout
             )
             
             if response.status_code == 200:
