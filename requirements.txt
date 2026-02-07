@@ -3,7 +3,7 @@ requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.1.0
 
-# Database - Let supabase manage its own dependencies
+# Database
 supabase==2.0.3
 
 # Google Drive
@@ -11,9 +11,6 @@ google-auth==2.27.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.111.0
-
-# LLM Support (Optional - for intelligent field extraction)
-groq==0.4.2  # Free & fast Llama models via Groq API
 
 # Utilities
 python-dotenv==1.0.0
@@ -27,3 +24,16 @@ coloredlogs==15.0.1
 
 # Data Processing
 pandas==2.1.4
+
+# ===========================================
+# LLM Support (All Optional)
+# ===========================================
+# Option 1: Ollama Local (Recommended) - NO PYTHON PACKAGE NEEDED
+#   Just install Ollama and run: ollama pull llama3.2:1b
+#   100% free, private, works offline
+#   See: OLLAMA_SETUP.md
+
+# Option 2: Groq Cloud API (Optional fallback)
+#   Uncomment to use cloud LLM (free tier available)
+#   groq==0.4.2
+#   Get key: https://console.groq.com/
