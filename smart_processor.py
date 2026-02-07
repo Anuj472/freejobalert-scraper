@@ -1,7 +1,7 @@
 """Smart Job Processor - IMPROVED with link filtering and post_date extraction.
 
 Architecture:
-1. Priority: Extract CONTENT from PDF using Gemma 3 (includes location, no URLs, no post_date)
+1. Priority: Extract CONTENT from PDF using Gemma 3 (includes location, category, no URLs, no post_date)
 2. Extract LINKS and POST_DATE from HTML using CSS parser
 3. Filter out FreeJobAlert links
 4. Generate SEO blog using Gemma 3 (concise, <1000 words)
@@ -118,7 +118,7 @@ class SmartJobProcessor:
         Process job with smart priority and link filtering.
         
         IMPROVED WORKFLOW:
-        1. PDF extracts CONTENT (job details, location, NO URLs, NO post_date)
+        1. PDF extracts CONTENT (job details, location, category, NO URLs, NO post_date)
         2. HTML extracts LINKS + POST_DATE
         3. Filter out FreeJobAlert links
         4. Generate concise blog (<1000 words)
@@ -145,9 +145,9 @@ class SmartJobProcessor:
             logger.info(f"✓ PDF URL from FreeJobAlert: {pdf_url[:60]}")
             # Keep it - we'll process PDF but won't save this URL to database
         
-        # PRIORITY 1: Extract CONTENT from PDF using Gemma 3 (includes location, no URLs, no post_date)
+        # PRIORITY 1: Extract CONTENT from PDF using Gemma 3 (includes location, category, no URLs, no post_date)
         if pdf_url and self.gemma.is_available():
-            logger.info(f"🎯 Priority 1: Extracting CONTENT (with location) from PDF")
+            logger.info(f"🎯 Priority 1: Extracting CONTENT (with location & category) from PDF")
             logger.info(f"   (URLs and post_date will be extracted from HTML)")
             
             structured_data = self.gemma.process_pdf_url(pdf_url)
@@ -157,7 +157,12 @@ class SmartJobProcessor:
                 logger.info(f"✓ Successfully extracted content from PDF")
                 logger.info(f"   Extracted {len(structured_data)} fields")
                 
-                # Log if location was extracted
+                # Log important extracted fields
+                if structured_data.get('category'):
+                    logger.info(f"   ✓ Category extracted: {structured_data['category']}")
+                else:
+                    logger.warning(f"   ⚠️ Category not found in PDF")
+                    
                 if structured_data.get('location'):
                     logger.info(f"   ✓ Location extracted: {structured_data['location']}")
                 else:
@@ -210,14 +215,17 @@ class SmartJobProcessor:
         final_data = self._clean_links(final_data)
         
         # Log final important fields
+        logger.info(f"📦 Final extracted fields:")
+        if final_data.get('category'):
+            logger.info(f"   ✓ Category: {final_data['category']}")
         if final_data.get('location'):
-            logger.info(f"✓ Final Location: {final_data['location']}")
+            logger.info(f"   ✓ Location: {final_data['location']}")
         if final_data.get('post_date'):
-            logger.info(f"✓ Final Post Date: {final_data['post_date']}")
+            logger.info(f"   ✓ Post Date: {final_data['post_date']}")
         if final_data.get('application_url'):
-            logger.info(f"✓ Application URL: {final_data['application_url'][:60]}...")
+            logger.info(f"   ✓ Application URL: {final_data['application_url'][:60]}...")
         if final_data.get('official_website'):
-            logger.info(f"✓ Official Website: {final_data['official_website'][:60]}...")
+            logger.info(f"   ✓ Official Website: {final_data['official_website'][:60]}...")
         
         # STEP 3: ALWAYS generate SEO blog with Gemma 3 (concise, <1000 words)
         if self.gemma.is_available():
