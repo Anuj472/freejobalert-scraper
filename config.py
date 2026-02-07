@@ -17,7 +17,7 @@ class Config:
     GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
     
     # LLM Configuration (Local Ollama - Private & Free)
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')  # Small & fast model (1.3GB)
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Better accuracy (2GB)
     OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')  # Ollama server
     
     # Optional: Groq API (if Ollama not available)
