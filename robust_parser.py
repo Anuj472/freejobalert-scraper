@@ -224,7 +224,7 @@ class RobustJobParser:
         if title:
             vacancy = self._extract_vacancies_from_text(title)
             if vacancy:
-                logger.info(f"  ✓ Found vacancies in title: {vacancy}")
+                logger.info(f"  [OK] Found vacancies in title: {vacancy}")
                 return vacancy
         
         # Method 2: Look in content for explicit vacancy mentions
@@ -234,13 +234,13 @@ class RobustJobParser:
             if re.search(r'total\s+(?:post|vacanc)', text, re.IGNORECASE):
                 vacancy = self._extract_vacancies_from_text(text)
                 if vacancy:
-                    logger.info(f"  ✓ Found vacancies in content: {vacancy}")
+                    logger.info(f"  [OK] Found vacancies in content: {vacancy}")
                     return vacancy
         
         # Method 3: Search in full text
         vacancy = self._extract_vacancies_from_text(full_text)
         if vacancy:
-            logger.info(f"  ✓ Found vacancies in full text: {vacancy}")
+            logger.info(f"  [OK] Found vacancies in full text: {vacancy}")
             return vacancy
         
         # Method 4: Look in tables
@@ -249,10 +249,10 @@ class RobustJobParser:
             table_data = self._extract_table_data(table)
             vacancy = self._get_total_from_table(table_data)
             if vacancy:
-                logger.info(f"  ✓ Found vacancies in table: {vacancy}")
+                logger.info(f"  [OK] Found vacancies in table: {vacancy}")
                 return vacancy
         
-        logger.debug("  ⚠️  Could not extract vacancies")
+        logger.debug("  [WARN] Could not extract vacancies")
         return None
     
     def _extract_vacancies_from_text(self, text: str) -> Optional[int]:
