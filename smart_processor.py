@@ -1,14 +1,17 @@
-"""Smart Job Processor - IMPROVED with link filtering and post_date extraction.
+"""Smart Job Processor - IMPROVED with link filtering, post_date extraction, and category detection.
 
 Architecture:
 1. Priority: Extract CONTENT from PDF using Gemma 3 (includes location, category, no URLs, no post_date)
-2. Extract LINKS and POST_DATE from HTML using CSS parser
-3. Filter out FreeJobAlert links
-4. Generate SEO blog using Gemma 3 (concise, <1000 words)
+2. If no PDF: Extract from HTML + use Gemma to determine category from content
+3. Extract LINKS and POST_DATE from HTML using CSS parser
+4. Filter out FreeJobAlert links
+5. Generate SEO blog using Gemma 3 (concise, <1000 words)
 """
 
 import logging
 import re
+import json
+import requests
 from typing import Dict, Optional
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -19,7 +22,7 @@ from robust_parser import RobustJobParser
 logger = logging.getLogger(__name__)
 
 class SmartJobProcessor:
-    """Smart processor with PDF priority, link filtering, and post_date extraction."""
+    """Smart processor with PDF priority, category detection, link filtering, and post_date extraction."""
     
     def __init__(self):
         """Initialize processors."""
@@ -56,6 +59,82 @@ class SmartJobProcessor:
                 data[field] = None  # Remove FreeJobAlert links
         
         return data
+    
+    def _extract_category_from_text(self, text: str, organization: str) -> Optional[str]:
+        """Use Gemma to extract category from text content when no PDF is available."""
+        if not self.gemma.is_available():
+            return None
+        
+        try:
+            # Truncate text to reasonable length
+            text_sample = text[:3000]
+            
+            prompt = f"""Analyze this government job recruitment text and determine its CATEGORY.
+
+ORGANIZATION: {organization}
+
+TEXT SAMPLE:
+{text_sample}
+
+Based on the organization name and content, what is the MOST APPROPRIATE category?
+
+Choose ONE from:
+- "banking" - Banks: SBI, IBPS, RBI, PNB, Bank of India, Canara Bank, etc.
+- "defence" - Armed Forces: Indian Army, Navy, Air Force, DRDO, NDA, Coast Guard, etc.
+- "railway" - Indian Railways, RRB, Railway Recruitment Board, IRCTC
+- "ssc" - Staff Selection Commission
+- "upsc" - Union Public Service Commission
+- "police" - Police Department, State/Central Police
+- "teaching" - Universities, Schools, Education Dept, UGC, NCERT
+- "psu" - PSUs: NTPC, ONGC, SAIL, BHEL, Coal India, etc.
+- "state-govt" - State Government Departments
+- "central-govt" - Central Government Departments
+- "admit-card" - If this is an admit card document
+- "result" - If this is a result document
+
+Return ONLY the category name as a single word (e.g., "banking" or "railway").
+
+CATEGORY:"""
+
+            response = requests.post(
+                f"{self.gemma.ollama_url}/api/generate",
+                json={
+                    "model": self.gemma.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 50
+                    }
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                category = result.get('response', '').strip().lower()
+                
+                # Clean up response
+                category = re.sub(r'[^a-z\-]', '', category)
+                
+                # Validate category
+                valid_categories = [
+                    'banking', 'defence', 'railway', 'ssc', 'upsc',
+                    'police', 'teaching', 'psu', 'state-govt', 'central-govt',
+                    'admit-card', 'result'
+                ]
+                
+                if category in valid_categories:
+                    logger.info(f"  ✓ Category detected by Gemma: {category}")
+                    return category
+                else:
+                    logger.warning(f"  ⚠️ Invalid category from Gemma: {category}")
+                    return None
+            
+        except Exception as e:
+            logger.debug(f"Error extracting category with Gemma: {e}")
+        
+        return None
     
     def _extract_post_date_from_html(self, html: str) -> Optional[str]:
         """Extract article publish date from HTML metadata."""
@@ -115,13 +194,14 @@ class SmartJobProcessor:
     
     def process_job(self, job_listing: Dict, html: str, details_url: str) -> Dict:
         """
-        Process job with smart priority and link filtering.
+        Process job with smart priority, category detection, and link filtering.
         
         IMPROVED WORKFLOW:
         1. PDF extracts CONTENT (job details, location, category, NO URLs, NO post_date)
-        2. HTML extracts LINKS + POST_DATE
-        3. Filter out FreeJobAlert links
-        4. Generate concise blog (<1000 words)
+        2. If NO PDF: Extract from HTML + use Gemma to determine category from content
+        3. HTML extracts LINKS + POST_DATE
+        4. Filter out FreeJobAlert links
+        5. Generate concise blog (<1000 words)
         
         Args:
             job_listing: Basic job info from listing page
@@ -129,7 +209,7 @@ class SmartJobProcessor:
             details_url: URL of the job details page
             
         Returns:
-            Complete job data with blog content
+            Complete job data with blog content and category
         """
         
         structured_data = None
@@ -182,6 +262,19 @@ class SmartJobProcessor:
                 non_empty = len([v for v in structured_data.values() if v])
                 logger.info(f"✓ Successfully extracted from HTML")
                 logger.info(f"   Extracted {non_empty} non-empty fields")
+                
+                # CRITICAL: Use Gemma to extract category from HTML content
+                if not structured_data.get('category'):
+                    logger.info(f"🤖 No PDF available - using Gemma to detect category from HTML...")
+                    organization = structured_data.get('organization', '')
+                    full_text = structured_data.get('full_description', '')
+                    
+                    if organization and full_text:
+                        category = self._extract_category_from_text(full_text, organization)
+                        if category:
+                            structured_data['category'] = category
+                        else:
+                            logger.warning(f"   ⚠️ Could not determine category from HTML")
         else:
             # PDF gave us content, HTML gives us links + post_date
             logger.info(f"📄 Extracting LINKS and POST_DATE from HTML...")
@@ -218,6 +311,8 @@ class SmartJobProcessor:
         logger.info(f"📦 Final extracted fields:")
         if final_data.get('category'):
             logger.info(f"   ✓ Category: {final_data['category']}")
+        else:
+            logger.warning(f"   ⚠️ Category not extracted")
         if final_data.get('location'):
             logger.info(f"   ✓ Location: {final_data['location']}")
         if final_data.get('post_date'):
