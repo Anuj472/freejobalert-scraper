@@ -1,9 +1,10 @@
-"""Smart Job Processor - CORRECT FLOW:
+"""Smart Job Processor - IMPROVED PDF link detection.
 
-1. FIRST: Find PDF link in detail page HTML
-2. If PDF found → Download and give to Gemma for ALL content extraction
-3. Then extract ONLY links + dates from HTML
-4. If NO PDF → Parse HTML content + Gemma determines category
+Looks for:
+- "Official Notification PDF"
+- "Download PDF"
+- "Notification"
+- "Advertisement"
 """
 
 import logging
@@ -42,14 +43,56 @@ class SmartJobProcessor:
     def _find_pdf_link_in_html(self, html: str, base_url: str) -> Optional[str]:
         """STEP 1: Find PDF notification link in HTML.
         
+        Looks for links with text containing:
+        - "Official Notification PDF"
+        - "Download PDF"
+        - "Notification"
+        - "Advertisement"
+        - Or any link ending with .pdf
+        
         Returns:
             PDF URL or None
         """
         try:
             soup = BeautifulSoup(html, 'html.parser')
             
-            # Look for PDF links
+            # Priority 1: Look for specific text patterns (HIGHEST PRIORITY)
+            priority_keywords = [
+                'official notification pdf',
+                'download pdf',
+                'official notification',
+                'download notification',
+            ]
+            
             all_links = soup.find_all('a', href=True)
+            
+            # PRIORITY 1: Links with priority keywords in text
+            for link in all_links:
+                href = link.get('href', '').strip()
+                text = link.get_text(strip=True).lower()
+                
+                if not href:
+                    continue
+                
+                # Check for priority keywords
+                for keyword in priority_keywords:
+                    if keyword in text:
+                        # Make absolute URL
+                        if not href.startswith('http'):
+                            href = urljoin(base_url, href)
+                        
+                        logger.info(f"✓ Found PDF link with text '{text[:50]}': {href[:70]}...")
+                        return href
+            
+            # PRIORITY 2: Links with PDF-related keywords
+            pdf_keywords = [
+                'notification',
+                'advertisement',
+                'advt',
+                'circular',
+                'detailed notification',
+                'recruitment notification'
+            ]
             
             for link in all_links:
                 href = link.get('href', '').strip()
@@ -58,25 +101,41 @@ class SmartJobProcessor:
                 if not href:
                     continue
                 
-                # Make absolute URL
-                if not href.startswith('http'):
-                    href = urljoin(base_url, href)
-                
-                # Check if it's a PDF
+                # Must have .pdf in URL
                 if '.pdf' in href.lower():
-                    # Prefer official notification PDFs
-                    if any(keyword in text for keyword in ['notification', 'download', 'official', 'advt', 'advertisement']):
-                        logger.info(f"✓ Found PDF link: {href[:70]}...")
+                    # Check if text contains any PDF keyword
+                    if any(keyword in text for keyword in pdf_keywords):
+                        if not href.startswith('http'):
+                            href = urljoin(base_url, href)
+                        
+                        logger.info(f"✓ Found PDF link with keyword '{text[:50]}': {href[:70]}...")
                         return href
             
-            # If no keyword match, return first PDF found
+            # PRIORITY 3: Any link ending with .pdf
             for link in all_links:
                 href = link.get('href', '').strip()
+                
                 if href and '.pdf' in href.lower():
                     if not href.startswith('http'):
                         href = urljoin(base_url, href)
-                    logger.info(f"✓ Found PDF link: {href[:70]}...")
-                    return href
+                    
+                    # Skip FreeJobAlert PDFs
+                    if not self._is_freejobalert_link(href):
+                        logger.info(f"✓ Found PDF link: {href[:70]}...")
+                        return href
+            
+            # PRIORITY 4: Check parent elements
+            # Sometimes "Official Notification PDF" is in a parent div/span
+            pdf_sections = soup.find_all(['div', 'p', 'span'], string=re.compile(r'official notification pdf', re.IGNORECASE))
+            for section in pdf_sections:
+                link = section.find('a', href=True)
+                if link:
+                    href = link.get('href', '').strip()
+                    if href:
+                        if not href.startswith('http'):
+                            href = urljoin(base_url, href)
+                        logger.info(f"✓ Found PDF in section: {href[:70]}...")
+                        return href
             
             logger.info("ℹ️  No PDF link found in HTML")
             return None
@@ -117,11 +176,10 @@ class SmartJobProcessor:
                 # Identify link type
                 if '.pdf' in href.lower() and not links['pdf_url']:
                     links['pdf_url'] = href
-                elif 'apply' in text and not links['application_url']:
+                elif any(word in text for word in ['apply', 'application', 'apply online']) and not links['application_url']:
                     links['application_url'] = href
-                elif 'official website' in text or 'official site' in text:
-                    if not links['official_website']:
-                        links['official_website'] = href
+                elif any(word in text for word in ['official website', 'official site', 'website']) and not links['official_website']:
+                    links['official_website'] = href
                     if not links['organization_url']:
                         links['organization_url'] = href
             
