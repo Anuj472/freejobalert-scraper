@@ -16,6 +16,17 @@ class Config:
     GOOGLE_CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
     GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
     
+    # LLM Configuration (Groq/Ollama)
+    GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')  # Get from https://console.groq.com/
+    GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')  # Best free model
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Local model
+    OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')  # Ollama server
+    
+    # LLM Fallback Strategy
+    USE_LLM_FALLBACK = os.getenv('USE_LLM_FALLBACK', 'true').lower() == 'true'
+    LLM_CRITICAL_FIELDS = ['title', 'organization', 'last_date', 'application_url']  # Must extract
+    LLM_OPTIONAL_THRESHOLD = 3  # Use LLM if more than N optional fields missing
+    
     # Scraper Configuration
     BASE_URL = 'https://www.freejobalert.com'
     USER_AGENT = os.getenv(
@@ -73,6 +84,13 @@ class Config:
             import logging
             logger = logging.getLogger(__name__)
             logger.warning('GOOGLE_DRIVE_FOLDER_ID is not set - PDF upload will be skipped')
+        
+        # LLM is optional
+        if not Config.GROQ_API_KEY and Config.USE_LLM_FALLBACK:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning('GROQ_API_KEY not set - LLM fallback will use Ollama if available')
+            logger.info('Get free Groq API key: https://console.groq.com/')
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
