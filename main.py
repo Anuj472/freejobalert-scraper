@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Main execution script for FreeJobAlert scraper.
 
-Fixed: Google Drive upload logic
-- FreeJobAlert PDFs -> Upload to Drive -> Save in gdrive_link
-- External PDFs -> Keep original URL in pdf_url
-
-Fixed: Windows console encoding - use ASCII symbols
+Features:
+- Smart processing: PDF-first extraction with HTML fallback
+- Always generates SEO blog using Gemma 3
+- Google Drive upload for FreeJobAlert PDFs
+- External PDFs kept as URLs
 """
 
 import sys
@@ -46,23 +46,31 @@ def process_job(
     supabase_client: SupabaseClient,
     gdrive_uploader: GoogleDriveUploader = None
 ) -> bool:
-    """Process a single job: fetch details, download PDF, upload to Drive, save to DB.
+    """
+    Process a single job with smart extraction and blog generation.
     
-    Logic:
-    - If PDF is from FreeJobAlert -> Download + Upload to Drive -> Save in gdrive_link
-    - If PDF is external -> Keep original URL in pdf_url
+    Workflow:
+    1. Extract data (PDF-first, HTML fallback)
+    2. Generate SEO blog (always)
+    3. Handle PDF upload/URL
+    4. Save to database
     """
     try:
-        # Fetch detailed job information
+        # Fetch and process job details with smart processor
         logger.info(f"Processing: {job['title']}")
-        details = scraper.get_job_details(job['details_url'])
+        
+        # Smart processor will:
+        # 1. Try PDF extraction (if available)
+        # 2. Fallback to HTML parsing
+        # 3. ALWAYS generate blog
+        details = scraper.get_job_details(job['details_url'], job)
         
         if not details:
             logger.warning(f"Could not fetch details for: {job['title']}")
             return False
         
-        # Merge basic info with details
-        job_data = {**job, **details}
+        # Details already includes merged data and blog content
+        job_data = details
         
         # Initialize PDF-related fields
         job_data['gdrive_link'] = None
@@ -119,6 +127,8 @@ def process_job(
                 logger.info(f"  -> Google Drive: {job_data['gdrive_link'][:60]}...")
             if job_data.get('pdf_url'):
                 logger.info(f"  -> PDF URL: {job_data['pdf_url'][:60]}...")
+            if job_data.get('blog_article'):
+                logger.info(f"  -> Blog: {len(job_data['blog_article'])} characters")
             return True
         
         return False
@@ -178,6 +188,9 @@ def main():
             categories = Config.CATEGORIES
         
         logger.info(f"Starting scrape for categories: {categories}")
+        logger.info("  - PDF-first extraction (Gemma 3 multimodal)")
+        logger.info("  - HTML fallback (CSS parser)")
+        logger.info("  - Always generates SEO blog")
         
         # Scrape jobs from all categories
         all_jobs = []
@@ -195,7 +208,7 @@ def main():
             logger.warning("No jobs found")
             return
         
-        logger.info(f"Found {len(all_jobs)} jobs. Processing...")
+        logger.info(f"Found {len(all_jobs)} jobs. Processing with smart processor...")
         
         # Process each job
         processed = 0
