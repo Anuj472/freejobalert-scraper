@@ -1,7 +1,9 @@
-"""Web scraper for FreeJobAlert.com using robust CSS-only parsing.
+"""Web scraper for FreeJobAlert.com with smart processing.
 
-NO LLM required - all extraction done with CSS selectors and regex.
-Properly extracts vacancies without confusing with year.
+Features:
+- PDF-first extraction using Gemma 3 multimodal
+- Fallback to CSS parser
+- Always generates SEO blog
 """
 
 import logging
@@ -15,7 +17,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from config import Config
-from robust_parser import RobustJobParser
+from smart_processor import SmartJobProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,7 @@ class FreeJobAlertScraper:
     BASE_URL = "https://www.freejobalert.com"
     
     def __init__(self):
-        """Initialize the scraper with session and parser."""
+        """Initialize the scraper with session and smart processor."""
         self.session = requests.Session()
         
         # Setup retry strategy
@@ -50,9 +52,12 @@ class FreeJobAlertScraper:
             'Upgrade-Insecure-Requests': '1'
         })
         
-        # Initialize robust parser (no LLM)
-        self.parser = RobustJobParser()
-        logger.info("[OK] Using robust CSS-only parser (no LLM required)")
+        # Initialize smart processor (PDF-first + blog generation)
+        self.processor = SmartJobProcessor()
+        logger.info("[OK] Scraper initialized with Smart Processor")
+        logger.info("     - PDF-first extraction (Gemma 3 multimodal)")
+        logger.info("     - HTML fallback (CSS parser)")
+        logger.info("     - Always generates SEO blog")
     
     def scrape_category(
         self,
@@ -250,16 +255,21 @@ class FreeJobAlertScraper:
         
         return job_data
     
-    def get_job_details(self, details_url: str) -> Optional[dict]:
+    def get_job_details(self, details_url: str, job_listing: dict) -> Optional[dict]:
         """
-        Fetch detailed job information from the job details page.
-        Uses robust CSS-only parser (no LLM required).
+        Fetch detailed job information using smart processor.
+        
+        Priority:
+        1. Try PDF extraction (if available)
+        2. Fallback to HTML parsing
+        3. Always generate SEO blog
         
         Args:
             details_url: URL of the job details page
+            job_listing: Basic job info from listing
         
         Returns:
-            Dictionary with detailed job information
+            Dictionary with detailed job information + blog content
         """
         try:
             logger.info(f"Fetching job details from: {details_url}")
@@ -269,16 +279,8 @@ class FreeJobAlertScraper:
             
             html_content = response.text
             
-            # Use robust parser to extract all fields
-            details = self.parser.parse_job_details(html_content, details_url)
-            
-            # Count extracted fields
-            field_count = sum(1 for v in details.values() if v and str(v).strip())
-            logger.info(f"[OK] Extracted {field_count} non-empty fields")
-            
-            # Log vacancies if found
-            if details.get('vacancies'):
-                logger.info(f"  [OK] Vacancies: {details['vacancies']}")
+            # Use smart processor (PDF-first + blog generation)
+            details = self.processor.process_job(job_listing, html_content, details_url)
             
             time.sleep(Config.REQUEST_DELAY)
             return details
@@ -287,7 +289,9 @@ class FreeJobAlertScraper:
             logger.error(f"Error fetching job details from {details_url}: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error parsing job details: {e}")
+            logger.error(f"Error processing job details: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def download_pdf(self, pdf_url: str, output_path: str) -> bool:
