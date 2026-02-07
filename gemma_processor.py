@@ -1,10 +1,4 @@
-"""Gemma 3 12B Multimodal Processor for PDF extraction and blog generation.
-
-Handles:
-- Text PDFs (fast extraction)
-- Scanned/Image PDFs (vision-based extraction)
-- SEO blog generation
-"""
+"""Gemma 3 12B Multimodal Processor - IMPROVED VERSION with focused prompts."""
 
 import requests
 import json
@@ -34,7 +28,7 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 class GemmaProcessor:
-    """Process PDFs and generate blogs using Gemma 3 12B multimodal model."""
+    """Process PDFs and generate blogs using Gemma 3 with focused prompts."""
     
     def __init__(self):
         """Initialize Gemma 3 12B processor."""
@@ -43,7 +37,6 @@ class GemmaProcessor:
         self.temp_dir = Path('temp_pdfs')
         self.temp_dir.mkdir(exist_ok=True)
         
-        # Check if Gemma 3 is available
         if self._check_model_available():
             logger.info(f"✓ {self.model} initialized")
             logger.info(f"  - Vision: ✓")
@@ -71,13 +64,7 @@ class GemmaProcessor:
     def process_pdf_url(self, pdf_url: str) -> Optional[Dict]:
         """
         Download and process PDF using Gemma 3.
-        Handles both text and image PDFs.
-        
-        Args:
-            pdf_url: URL of the PDF file
-            
-        Returns:
-            Extracted job data dictionary or None
+        IMPROVED: Focused prompts, no URL extraction.
         """
         if not self.is_available():
             logger.warning("Gemma 3 not available, skipping PDF processing")
@@ -99,33 +86,28 @@ class GemmaProcessor:
                 text_data = self._try_text_extraction(pdf_bytes)
                 if text_data and len(text_data) > 500:
                     logger.info("📄 Text PDF detected, extracting with Gemma 3...")
-                    return self._extract_from_text(text_data)
+                    return self._extract_from_text_focused(text_data)
             
             # Convert to images for vision processing
             if PDF2IMAGE_AVAILABLE:
                 logger.info("🖼️  Image/Scanned PDF detected, using Gemma 3 Vision...")
                 pdf_bytes.seek(0)
                 
-                # Save temporarily
                 temp_pdf = self.temp_dir / f'temp_{hash(pdf_url)}.pdf'
                 with open(temp_pdf, 'wb') as f:
                     f.write(pdf_bytes.read())
                 
-                # Convert to images
                 images = convert_from_path(
                     temp_pdf,
                     dpi=200,
                     fmt='jpeg',
                     first_page=1,
-                    last_page=3  # Process first 3 pages
+                    last_page=3
                 )
                 
                 logger.info(f"✓ Converted {len(images)} pages to images")
                 
-                # Extract with vision
-                result = self._extract_from_images(images)
-                
-                # Cleanup
+                result = self._extract_from_images_focused(images)
                 temp_pdf.unlink()
                 
                 return result
@@ -142,36 +124,67 @@ class GemmaProcessor:
         try:
             pdf_reader = PyPDF2.PdfReader(pdf_bytes)
             text = ""
-            for page in pdf_reader.pages[:5]:  # First 5 pages
+            for page in pdf_reader.pages[:5]:
                 text += page.extract_text()
             return text if len(text) > 100 else None
         except:
             return None
     
-    def _extract_from_text(self, text: str) -> Optional[Dict]:
-        """Extract structured data from text PDF using Gemma 3."""
+    def _extract_from_text_focused(self, text: str) -> Optional[Dict]:
+        """
+        IMPROVED: Extract with focused, specific questions.
+        NO URL extraction - HTML parser will handle that.
+        """
         
-        prompt = f"""Extract job recruitment information from this official notification.
+        # Truncate text to fit context
+        text = text[:50000]
+        
+        prompt = f"""You are analyzing a government job recruitment notification document.
 
-NOTIFICATION TEXT:
-{text[:50000]}
+DOCUMENT TEXT:
+{text}
 
-Return ONLY valid JSON with these fields:
+Answer these SPECIFIC questions by carefully reading the document. Return ONLY valid JSON.
+
+CRITICAL RULES:
+1. DO NOT extract or include ANY URLs, links, or web addresses
+2. Vacancies MUST be INTEGER count (e.g., 100, 50, 25) NOT year (2026)
+3. Dates in DD-MM-YYYY format only
+4. Use null for fields not found in document
+5. Be precise and extract EXACT values from document
+
+Questions to answer:
+1. What is the EXACT job title or post name?
+2. What is the EXACT organization/department/commission name?
+3. How many TOTAL vacancies are there? (INTEGER count, NOT year)
+4. What is the advertisement/notification number?
+5. What are the important dates?
+   - When does application start? (DD-MM-YYYY)
+   - What is the last date to apply? (DD-MM-YYYY)
+   - When is exam date if mentioned? (DD-MM-YYYY)
+6. What is the salary or pay scale mentioned?
+7. What is the age limit for applicants?
+8. What educational qualification is required?
+9. What is the job location or posting location?
+10. What is the application fee for different categories?
+11. What is the selection process or exam pattern?
+12. How should candidates apply? (Step-by-step)
+13. Is there a post-wise vacancy breakdown?
+
+Return ONLY this JSON structure:
 {{
-    "title": "Complete job title",
-    "organization": "Organization/Department name",
+    "title": "Exact job title from document",
+    "organization": "Exact organization name",
     "vacancies": 120,
-    "post_date": "DD-MM-YYYY",
+    "advt_no": "Advertisement number",
+    "post_date": "DD-MM-YYYY or null",
     "last_date": "DD-MM-YYYY",
-    "salary": "Pay scale with amount",
+    "salary": "Pay scale details",
     "age_limit": "Age requirement",
-    "qualification": "Educational qualification required",
-    "location": "Job location with state",
-    "application_fee": {{"General/OBC": "Rs. 100", "SC/ST": "Nil"}},
-    "advt_no": "Advertisement/Notification number",
-    "application_url": "Online application URL",
-    "official_website": "Organization website URL",
-    "selection_process": "Selection/exam process",
+    "qualification": "Educational qualification",
+    "location": "Job location",
+    "application_fee": {{"General": "Rs. X", "SC/ST": "Nil"}},
+    "selection_process": "Exam/selection method",
     "how_to_apply": "Application instructions",
     "important_dates": {{
         "Application Start": "DD-MM-YYYY",
@@ -179,23 +192,26 @@ Return ONLY valid JSON with these fields:
         "Exam Date": "DD-MM-YYYY"
     }},
     "vacancy_details": {{
-        "Post Name": "Count"
+        "Post Name 1": "Count",
+        "Post Name 2": "Count"
     }}
 }}
 
-CRITICAL RULES:
-1. vacancies MUST be INTEGER (total count, not year)
-2. Dates in DD-MM-YYYY format only
-3. Extract exact values from text
-4. Use null for fields not found
-5. Return ONLY valid JSON, no markdown
+REMEMBER:
+- NO URLs or links
+- Vacancies = INTEGER count
+- Dates = DD-MM-YYYY
+- null if not found
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=None)
+        return self._call_gemma(prompt, images=None, timeout=120)
     
-    def _extract_from_images(self, images: List) -> Optional[Dict]:
-        """Extract structured data from PDF images using Gemma 3 Vision."""
+    def _extract_from_images_focused(self, images: List) -> Optional[Dict]:
+        """
+        IMPROVED: Extract from images with focused questions.
+        NO URL extraction.
+        """
         
         # Convert images to base64
         images_base64 = []
@@ -205,107 +221,116 @@ JSON OUTPUT:"""
             img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
             images_base64.append(img_base64)
         
-        prompt = """Analyze these scanned government job notification document images and extract ALL information.
+        prompt = """You are analyzing scanned images of a government job notification document.
 
-Extract:
-- Job title and organization name
-- Total number of vacancies (COUNT as integer, not year)
-- Important dates (application start, end, exam date)
-- Salary/pay scale
-- Age limit
-- Educational qualification required
-- Job location
-- Application fee by category
-- Selection process
-- Application instructions
-- Vacancy breakdown by post
-- Advertisement/notification number
-- URLs if shown
+Answer these SPECIFIC questions by carefully reading all images. Return ONLY valid JSON.
 
-Return ONLY valid JSON:
+CRITICAL RULES:
+1. DO NOT extract or include ANY URLs, links, or web addresses
+2. Read tables carefully - vacancies = INTEGER count (e.g., 50, 100) NOT year (2026)
+3. Dates in DD-MM-YYYY format
+4. Use null for fields you cannot find
+5. Extract EXACT text you see
+
+Questions:
+1. What is the EXACT job title/post name shown?
+2. What is the EXACT organization/department name?
+3. How many TOTAL vacancies? (Look in tables, count INTEGER only)
+4. What is the notification/advertisement number?
+5. Important dates:
+   - Application start date? (DD-MM-YYYY)
+   - Last date to apply? (DD-MM-YYYY)
+   - Exam date if shown? (DD-MM-YYYY)
+6. Salary or pay scale?
+7. Age limit for applicants?
+8. Educational qualification required?
+9. Job location or posting place?
+10. Application fee by category?
+11. Selection process or exam pattern?
+12. How to apply? (Steps shown in document)
+13. Post-wise vacancy breakdown from tables?
+
+Return ONLY this JSON:
 {
-    "title": "Complete job title from document",
-    "organization": "Organization/Department name",
-    "vacancies": 120,
-    "post_date": "DD-MM-YYYY",
+    "title": "Exact job title",
+    "organization": "Exact organization name",
+    "vacancies": 100,
+    "advt_no": "Notification number",
+    "post_date": "DD-MM-YYYY or null",
     "last_date": "DD-MM-YYYY",
     "salary": "Pay scale",
     "age_limit": "Age requirement",
-    "qualification": "Educational qualification",
-    "location": "Location with state",
-    "application_fee": {"General": "Rs. 100", "SC/ST": "Nil"},
-    "advt_no": "Advertisement number",
-    "application_url": "Apply URL if shown",
-    "official_website": "Organization website if shown",
+    "qualification": "Education required",
+    "location": "Job location",
+    "application_fee": {"General": "Rs. X", "SC/ST": "Nil"},
     "selection_process": "Selection method",
-    "how_to_apply": "Application procedure",
+    "how_to_apply": "Application steps",
     "important_dates": {
         "Application Start": "DD-MM-YYYY",
         "Application End": "DD-MM-YYYY",
         "Exam Date": "DD-MM-YYYY"
     },
     "vacancy_details": {
-        "Post Name": "Count"
+        "Post 1": "Count",
+        "Post 2": "Count"
     }
 }
 
-CRITICAL:
-- vacancies = INTEGER total count (NOT year like 2026)
-- Read tables carefully
-- Extract dates in DD-MM-YYYY format
-- null for missing fields
-- Return ONLY JSON, no markdown
+REMEMBER:
+- NO URLs
+- Vacancies = INTEGER count from tables
+- Dates = DD-MM-YYYY
+- null if not visible
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=images_base64)
+        return self._call_gemma(prompt, images=images_base64, timeout=120)
     
     def generate_blog(self, job_data: Dict) -> Optional[Dict]:
-        """Generate SEO-optimized blog from job data using Gemma 3."""
+        """
+        IMPROVED: Generate concise SEO blog UNDER 1000 words.
+        """
         
         if not self.is_available():
             logger.warning("Gemma 3 not available, skipping blog generation")
             return None
         
-        prompt = f"""Create a comprehensive, SEO-optimized blog post for this job recruitment.
+        # Prepare clean data (remove None values)
+        clean_data = {k: v for k, v in job_data.items() if v is not None}
+        
+        prompt = f"""Create a CONCISE, SEO-optimized blog post for this job recruitment.
 
 JOB DATA:
-{json.dumps(job_data, indent=2)}
-
-Generate a professional blog post with:
-
-1. **SEO Title** (60-70 characters, include year and vacancy count)
-2. **Meta Description** (150-160 characters, compelling and informative)
-3. **Full Article** (800-1000 words in markdown format) with sections:
-   - Brief Overview (2-3 sentences)
-   - Key Highlights (5-7 bullet points with emojis like 🎯 📅 💰 🎓)
-   - Important Dates (markdown table)
-   - Vacancy Details/Post-wise Breakdown (if available)
-   - Eligibility Criteria (qualification, age limit)
-   - Salary & Benefits
-   - Application Fee
-   - Selection Process
-   - How to Apply (step-by-step)
-   - Important Links (official website, application, PDF)
-   - Frequently Asked Questions (5-7 relevant FAQs)
-
-4. **Highlights** (Array of 5 concise one-liner highlights)
-5. **FAQs** (Array of 5-7 Q&A pairs)
+{json.dumps(clean_data, indent=2)}
 
 REQUIREMENTS:
-- Write in clear, professional, helpful tone
-- Use markdown headings (##, ###)
-- Add relevant emojis for engagement
-- Natural keyword placement for SEO
-- Make it informative and user-friendly
-- Include all important details
-- Add actionable advice in FAQs
+1. WORD LIMIT: Maximum 800-900 words (be concise!)
+2. SEO Title: 60-70 characters
+3. Meta Description: 150-160 characters
+4. Blog Structure:
+   - Brief Overview (2-3 sentences)
+   - 🎯 Key Highlights (5 bullet points with emojis)
+   - 📅 Important Dates (markdown table)
+   - 📋 Eligibility (qualification, age limit)
+   - 💰 Salary & Fee Details
+   - 📝 How to Apply (4-5 steps)
+   - ❓ FAQs (5 questions)
+
+5. IMPORTANT:
+   - Use markdown headings (##, ###)
+   - Add emojis for engagement
+   - Keep language simple and clear
+   - Focus on KEY information only
+   - NO fluff or repetition
+   - Be helpful and direct
+
+6. Provide 5 one-liner highlights and 5 FAQs
 
 Return ONLY valid JSON:
 {{
-    "seo_title": "Job Title Year - Apply for X Posts",
+    "seo_title": "Job Title 2026 - X Posts | Last Date",
     "meta_description": "Complete details about...",
-    "article": "Full markdown blog post content...",
+    "article": "Full markdown blog (800-900 words MAX)...",
     "highlights": [
         "Total Posts: X",
         "Last Date: DD-MM-YYYY",
@@ -315,18 +340,40 @@ Return ONLY valid JSON:
     ],
     "faqs": [
         {{
-            "question": "What is the last date to apply?",
-            "answer": "The last date..."
+            "question": "What is the last date?",
+            "answer": "Brief answer..."
         }},
-        ...
+        {{
+            "question": "How many posts?",
+            "answer": "Brief answer..."
+        }},
+        {{
+            "question": "What is the qualification?",
+            "answer": "Brief answer..."
+        }},
+        {{
+            "question": "What is the salary?",
+            "answer": "Brief answer..."
+        }},
+        {{
+            "question": "How to apply?",
+            "answer": "Brief answer..."
+        }}
     ]
 }}
 
+CRITICAL:
+- Blog article MUST be under 1000 words
+- Be concise and to-the-point
+- Focus on IMPORTANT details only
+- Use tables for dates/fees
+
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=None, for_blog=True)
+        return self._call_gemma(prompt, images=None, for_blog=True, timeout=300)
     
-    def _call_gemma(self, prompt: str, images: Optional[List[str]] = None, for_blog: bool = False) -> Optional[Dict]:
+    def _call_gemma(self, prompt: str, images: Optional[List[str]] = None, 
+                    for_blog: bool = False, timeout: int = 120) -> Optional[Dict]:
         """Call Gemma 3 12B model."""
         
         try:
@@ -335,12 +382,8 @@ JSON OUTPUT:"""
                 "content": prompt
             }]
             
-            # Add images if provided
             if images:
                 messages[0]["images"] = images
-            
-            # Dynamic timeout based on task
-            timeout = 300 if for_blog else 120  # 5 minutes for blog, 2 minutes for extraction
             
             response = requests.post(
                 f"{self.ollama_url}/api/chat",
@@ -350,9 +393,9 @@ JSON OUTPUT:"""
                     "stream": False,
                     "format": "json",
                     "options": {
-                        "temperature": 0.7 if for_blog else 0,
-                        "num_predict": 3000 if for_blog else 2048,
-                        "num_ctx": 128000  # Use full 128K context
+                        "temperature": 0.7 if for_blog else 0.1,  # Lower temp for extraction
+                        "num_predict": 2500 if for_blog else 2048,  # Shorter blog
+                        "num_ctx": 128000
                     }
                 },
                 timeout=timeout
@@ -361,7 +404,7 @@ JSON OUTPUT:"""
             if response.status_code == 200:
                 content = response.json()['message']['content']
                 
-                # Clean and parse JSON
+                # Clean JSON response
                 content = content.strip()
                 if content.startswith('```json'):
                     content = content[7:]
@@ -380,7 +423,7 @@ JSON OUTPUT:"""
                 
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            logger.debug(f"Response content: {content[:200] if 'content' in locals() else 'N/A'}")
+            logger.debug(f"Response: {content[:200] if 'content' in locals() else 'N/A'}")
             return None
         except Exception as e:
             logger.error(f"Gemma 3 call failed: {e}")
