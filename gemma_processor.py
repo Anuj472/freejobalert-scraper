@@ -73,8 +73,8 @@ class GemmaProcessor:
         try:
             logger.info(f"📥 Downloading PDF: {pdf_url[:60]}...")
             
-            # Download PDF
-            response = requests.get(pdf_url, timeout=30, headers={
+            # Download PDF with INCREASED timeout (90 seconds for slow servers)
+            response = requests.get(pdf_url, timeout=90, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
             response.raise_for_status()
@@ -115,6 +115,9 @@ class GemmaProcessor:
                 logger.warning("pdf2image not available, cannot process image PDFs")
                 return None
                 
+        except requests.exceptions.Timeout:
+            logger.error(f"PDF download timeout after 90 seconds: {pdf_url[:60]}")
+            return None
         except Exception as e:
             logger.error(f"Error processing PDF: {e}")
             return None
