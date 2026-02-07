@@ -238,6 +238,35 @@ class SupabaseClient:
                 if isinstance(vacancy_details, dict) and vacancy_details:
                     insert_data['vacancy_details'] = json.dumps(vacancy_details)
             
+            # ===== BLOG-RELATED FIELDS (Gemma 3 Generated Content) =====
+            
+            # SEO title and meta description
+            if job_data.get('seo_title'):
+                insert_data['seo_title'] = job_data.get('seo_title')
+            
+            if job_data.get('meta_description'):
+                insert_data['meta_description'] = job_data.get('meta_description')
+            
+            # Full blog article in markdown
+            if job_data.get('blog_article'):
+                insert_data['blog_article'] = job_data.get('blog_article')
+            
+            # Highlights array (stored as JSONB)
+            if job_data.get('highlights'):
+                highlights = job_data.get('highlights')
+                if isinstance(highlights, list) and highlights:
+                    insert_data['highlights'] = json.dumps(highlights)
+            
+            # FAQs array (stored as JSONB)
+            if job_data.get('faqs'):
+                faqs = job_data.get('faqs')
+                if isinstance(faqs, list) and faqs:
+                    insert_data['faqs'] = json.dumps(faqs)
+            
+            # Data source indicator (pdf_gemma3 or html_css)
+            if job_data.get('data_source'):
+                insert_data['data_source'] = job_data.get('data_source')
+            
             # Remove None values
             insert_data = {k: v for k, v in insert_data.items() if v is not None}
             
@@ -246,6 +275,13 @@ class SupabaseClient:
             logger.info(f"Job URL (organization): {insert_data.get('job_url', 'N/A')[:80]}")
             if self.has_fja_url_column:
                 logger.info(f"Source URL (FreeJobAlert): {fja_url[:80]}")
+            
+            # Log blog content status
+            if insert_data.get('blog_article'):
+                blog_len = len(insert_data['blog_article'])
+                logger.info(f"✓ Blog content included ({blog_len} chars)")
+                if insert_data.get('data_source'):
+                    logger.info(f"   Data source: {insert_data['data_source']}")
             
             # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
@@ -256,6 +292,8 @@ class SupabaseClient:
                     logger.info(f"  - PDF URL: {insert_data['pdf_url'][:80]}")
                 if insert_data.get('application_url'):
                     logger.info(f"  - Apply URL: {insert_data['application_url'][:80]}")
+                if insert_data.get('blog_article'):
+                    logger.info(f"  - Blog: {len(insert_data['blog_article'])} chars")
                 if pdf_needs_upload:
                     logger.info(f"  ⚠️ FreeJobAlert PDF needs Drive upload")
                 return result.data[0]
