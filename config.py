@@ -16,19 +16,32 @@ class Config:
     GOOGLE_CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
     GOOGLE_DRIVE_FOLDER_ID = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
     
-    # LLM Configuration (Groq/Ollama)
-    GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')  # Get from https://console.groq.com/
-    GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')  # Best free model
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:3b')  # Local model
+    # LLM Configuration (Local Ollama - Private & Free)
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')  # Small & fast model (1.3GB)
     OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')  # Ollama server
+    
+    # Optional: Groq API (if Ollama not available)
+    GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')  # Get from https://console.groq.com/
+    GROQ_MODEL = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')  # Fallback model
     
     # LLM Strategy
     USE_LLM_FALLBACK = os.getenv('USE_LLM_FALLBACK', 'true').lower() == 'true'
-    LLM_ALWAYS_ENABLED = os.getenv('LLM_ALWAYS_ENABLED', 'true').lower() == 'true'  # NEW: Use LLM for all jobs
+    LLM_ALWAYS_ENABLED = os.getenv('LLM_ALWAYS_ENABLED', 'true').lower() == 'true'  # Use LLM for all jobs
     
-    # Fallback thresholds (only used if LLM_ALWAYS_ENABLED=false)
-    LLM_CRITICAL_FIELDS = ['title', 'organization', 'last_date', 'application_url']  # Must extract
-    LLM_OPTIONAL_THRESHOLD = 3  # Use LLM if more than N optional fields missing
+    # All fields to extract (matches database schema)
+    ALL_EXTRACTION_FIELDS = [
+        'title', 'organization', 'post_date', 'last_date', 'vacancies',
+        'qualification', 'location', 'job_url', 'application_url',
+        'official_website', 'pdf_url', 'category', 'advt_no',
+        'salary', 'age_limit', 'application_fee', 'selection_process',
+        'how_to_apply', 'important_dates', 'vacancy_details'
+    ]
+    
+    # Critical fields (must be extracted)
+    LLM_CRITICAL_FIELDS = ['title', 'organization', 'last_date', 'application_url']
+    
+    # Optional threshold for fallback mode (not used if LLM_ALWAYS_ENABLED=true)
+    LLM_OPTIONAL_THRESHOLD = 3
     
     # Scraper Configuration
     BASE_URL = 'https://www.freejobalert.com'
@@ -88,14 +101,19 @@ class Config:
             logger = logging.getLogger(__name__)
             logger.warning('GOOGLE_DRIVE_FOLDER_ID is not set - PDF upload will be skipped')
         
-        # LLM is optional
-        if not Config.GROQ_API_KEY and Config.USE_LLM_FALLBACK:
+        # LLM configuration info
+        if Config.USE_LLM_FALLBACK:
             import logging
             logger = logging.getLogger(__name__)
-            logger.warning('GROQ_API_KEY not set - LLM fallback will use Ollama if available')
-            logger.info('Get free Groq API key: https://console.groq.com/')
-            if Config.LLM_ALWAYS_ENABLED:
-                logger.info('LLM_ALWAYS_ENABLED=true: LLM will be used for all jobs for best data quality')
+            logger.info(f'LLM Configuration:')
+            logger.info(f'  Primary: Ollama local ({Config.OLLAMA_MODEL})')
+            logger.info(f'  Server: {Config.OLLAMA_URL}')
+            logger.info(f'  Strategy: {"Always" if Config.LLM_ALWAYS_ENABLED else "Fallback"}')
+            logger.info(f'')
+            logger.info(f'Setup Ollama:')
+            logger.info(f'  1. Install: curl -fsSL https://ollama.com/install.sh | sh')
+            logger.info(f'  2. Pull model: ollama pull {Config.OLLAMA_MODEL}')
+            logger.info(f'  3. Start: ollama serve')
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
