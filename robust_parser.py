@@ -2,6 +2,8 @@
 
 Extracts all fields using CSS selectors, regex patterns, and HTML parsing.
 Special focus on vacancies field to avoid extracting year (2026).
+
+CRITICAL: Filters out ALL FreeJobAlert links.
 """
 
 import logging
@@ -42,6 +44,27 @@ class RobustJobParser:
         """Initialize parser."""
         pass
     
+    def _is_freejobalert_link(self, url: str) -> bool:
+        """CRITICAL: Check if URL is from FreeJobAlert domain.
+        
+        Returns True if link should be BLOCKED.
+        """
+        if not url:
+            return False
+        
+        url_lower = url.lower()
+        blocked_domains = [
+            'freejobalert.com',
+            'www.freejobalert.com',
+        ]
+        
+        for domain in blocked_domains:
+            if domain in url_lower:
+                logger.info(f"🚫 BLOCKED FreeJobAlert link: {url[:70]}...")
+                return True
+        
+        return False
+    
     def parse_job_details(self, html: str, details_url: str) -> Dict:
         """Parse job details from HTML using CSS selectors only.
         
@@ -50,11 +73,11 @@ class RobustJobParser:
             details_url: URL of the job page
             
         Returns:
-            Dictionary with extracted job data
+            Dictionary with extracted job data (NO FreeJobAlert links)
         """
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Initialize result
+        # Initialize result - REMOVED organization_url and application_url
         details = {
             'job_url': details_url,
             'freejobalert_url': details_url,
@@ -71,9 +94,8 @@ class RobustJobParser:
             'application_fee': '',
             'selection_process': '',
             'how_to_apply': '',
-            'application_url': '',
-            'official_website': '',
-            'pdf_url': '',
+            'official_website': '',  # ONLY official website (no FreeJobAlert)
+            'pdf_url': '',  # ONLY PDF URL (no FreeJobAlert)
             'official_notification_pdf': '',
             'important_dates': {},
             'vacancy_details': {},
@@ -108,7 +130,7 @@ class RobustJobParser:
             details['last_date'] = dates['last_date']
         details['important_dates'] = dates.get('all_dates', {})
         
-        # Extract URLs (PDF, application, official)
+        # Extract URLs (PDF, official website) - WITH STRICT FILTERING
         urls = self._extract_urls(content)
         details.update(urls)
         
@@ -366,13 +388,22 @@ class RobustJobParser:
         return dates
     
     def _extract_urls(self, content: BeautifulSoup) -> Dict:
-        """Extract URLs (PDF, application, official website)."""
+        """Extract URLs with CRITICAL FreeJobAlert filtering.
+        
+        ONLY extracts:
+        - pdf_url: Official PDF notification
+        - official_website: Official organization website
+        
+        REMOVED:
+        - application_url (unnecessary)
+        - organization_url (duplicate of official_website)
+        
+        ALL FreeJobAlert links are BLOCKED.
+        """
         urls = {
             'pdf_url': '',
             'official_notification_pdf': '',
-            'application_url': '',
             'official_website': '',
-            'organization_url': '',
             'pdf_needs_upload': False
         }
         
@@ -389,34 +420,28 @@ class RobustJobParser:
             if not href.startswith('http'):
                 href = urljoin(self.BASE_URL, href)
             
+            # CRITICAL: Block FreeJobAlert links immediately
+            if self._is_freejobalert_link(href):
+                continue  # Skip this link completely
+            
             # Get parent context
             parent_text = ''
             if link.parent:
                 parent_text = link.parent.get_text(strip=True).lower()
             
             # Identify link type
-            # PDF
+            # PDF - Only from official sources
             if '.pdf' in href.lower():
                 if not urls['pdf_url']:
                     urls['pdf_url'] = href
                     urls['official_notification_pdf'] = href
-                    
-                    # Check if needs upload (FreeJobAlert hosted)
-                    parsed = urlparse(href.lower())
-                    if 'freejobalert.com' in parsed.netloc:
-                        urls['pdf_needs_upload'] = True
+                    logger.info(f"✓ Found official PDF: {href[:70]}...")
             
-            # Application URL
-            elif 'apply' in text or 'apply online' in parent_text:
-                if 'click here' in text or 'apply' in text:
-                    if not urls['application_url']:
-                        urls['application_url'] = href
-            
-            # Official Website
-            elif 'official website' in parent_text or 'official website' in text:
+            # Official Website - Only official domain links
+            elif 'official website' in parent_text or 'official website' in text or 'official site' in text:
                 if not urls['official_website']:
                     urls['official_website'] = href
-                    urls['organization_url'] = href
+                    logger.info(f"✓ Found official website: {href[:70]}...")
         
         return urls
     
