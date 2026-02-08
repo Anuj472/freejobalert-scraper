@@ -1,10 +1,12 @@
-"""Smart Job Processor - IMPROVED PDF link detection.
+"""Smart Job Processor - IMPROVED PDF link detection with CRITICAL link filtering.
 
 Looks for:
 - "Official Notification PDF"
 - "Download PDF"
 - "Notification"
 - "Advertisement"
+
+CRITICAL: Blocks ALL FreeJobAlert links.
 """
 
 import logging
@@ -35,10 +37,24 @@ class SmartJobProcessor:
             logger.warning("⚠️  Gemma 3 not available, will use HTML parser only")
     
     def _is_freejobalert_link(self, url: str) -> bool:
-        """Check if URL is from FreeJobAlert (should be filtered)."""
+        """CRITICAL: Check if URL is from FreeJobAlert (should be BLOCKED).
+        
+        Returns True if link must be filtered out.
+        """
         if not url:
             return False
-        return 'freejobalert.com' in url.lower()
+        
+        url_lower = url.lower()
+        blocked_domains = [
+            'freejobalert.com',
+            'www.freejobalert.com',
+        ]
+        
+        for domain in blocked_domains:
+            if domain in url_lower:
+                return True
+        
+        return False
     
     def _find_pdf_link_in_html(self, html: str, base_url: str) -> Optional[str]:
         """STEP 1: Find PDF notification link in HTML.
@@ -49,6 +65,8 @@ class SmartJobProcessor:
         - "Notification"
         - "Advertisement"
         - Or any link ending with .pdf
+        
+        BLOCKS FreeJobAlert links.
         
         Returns:
             PDF URL or None
@@ -74,13 +92,17 @@ class SmartJobProcessor:
                 if not href:
                     continue
                 
+                # Make absolute URL
+                if not href.startswith('http'):
+                    href = urljoin(base_url, href)
+                
+                # CRITICAL: Block FreeJobAlert links
+                if self._is_freejobalert_link(href):
+                    continue
+                
                 # Check for priority keywords
                 for keyword in priority_keywords:
                     if keyword in text:
-                        # Make absolute URL
-                        if not href.startswith('http'):
-                            href = urljoin(base_url, href)
-                        
                         logger.info(f"✓ Found PDF link with text '{text[:50]}': {href[:70]}...")
                         return href
             
@@ -101,17 +123,22 @@ class SmartJobProcessor:
                 if not href:
                     continue
                 
+                # Make absolute URL
+                if not href.startswith('http'):
+                    href = urljoin(base_url, href)
+                
+                # CRITICAL: Block FreeJobAlert links
+                if self._is_freejobalert_link(href):
+                    continue
+                
                 # Must have .pdf in URL
                 if '.pdf' in href.lower():
                     # Check if text contains any PDF keyword
                     if any(keyword in text for keyword in pdf_keywords):
-                        if not href.startswith('http'):
-                            href = urljoin(base_url, href)
-                        
                         logger.info(f"✓ Found PDF link with keyword '{text[:50]}': {href[:70]}...")
                         return href
             
-            # PRIORITY 3: Any link ending with .pdf
+            # PRIORITY 3: Any link ending with .pdf (not FreeJobAlert)
             for link in all_links:
                 href = link.get('href', '').strip()
                 
@@ -119,7 +146,7 @@ class SmartJobProcessor:
                     if not href.startswith('http'):
                         href = urljoin(base_url, href)
                     
-                    # Skip FreeJobAlert PDFs
+                    # CRITICAL: Skip FreeJobAlert PDFs
                     if not self._is_freejobalert_link(href):
                         logger.info(f"✓ Found PDF link: {href[:70]}...")
                         return href
@@ -134,8 +161,11 @@ class SmartJobProcessor:
                     if href:
                         if not href.startswith('http'):
                             href = urljoin(base_url, href)
-                        logger.info(f"✓ Found PDF in section: {href[:70]}...")
-                        return href
+                        
+                        # CRITICAL: Block FreeJobAlert links
+                        if not self._is_freejobalert_link(href):
+                            logger.info(f"✓ Found PDF in section: {href[:70]}...")
+                            return href
             
             logger.info("ℹ️  No PDF link found in HTML")
             return None
@@ -145,15 +175,17 @@ class SmartJobProcessor:
             return None
     
     def _extract_links_only_from_html(self, html: str, base_url: str) -> Dict:
-        """Extract ONLY links from HTML (NO content parsing)."""
+        """Extract ONLY links from HTML (NO content parsing).
+        
+        REMOVED: application_url, organization_url (unnecessary)
+        ONLY: pdf_url, official_website
+        """
         try:
             soup = BeautifulSoup(html, 'html.parser')
             
             links = {
                 'pdf_url': None,
-                'application_url': None,
                 'official_website': None,
-                'organization_url': None,
             }
             
             all_links = soup.find_all('a', href=True)
@@ -169,19 +201,16 @@ class SmartJobProcessor:
                 if not href.startswith('http'):
                     href = urljoin(base_url, href)
                 
-                # Skip FreeJobAlert links
+                # CRITICAL: Skip FreeJobAlert links
                 if self._is_freejobalert_link(href):
+                    logger.info(f"🚫 BLOCKED FreeJobAlert link from {text[:50]}...")
                     continue
                 
-                # Identify link type
+                # Identify link type - ONLY pdf_url and official_website
                 if '.pdf' in href.lower() and not links['pdf_url']:
                     links['pdf_url'] = href
-                elif any(word in text for word in ['apply', 'application', 'apply online']) and not links['application_url']:
-                    links['application_url'] = href
                 elif any(word in text for word in ['official website', 'official site', 'website']) and not links['official_website']:
                     links['official_website'] = href
-                    if not links['organization_url']:
-                        links['organization_url'] = href
             
             return links
             
@@ -319,13 +348,15 @@ CATEGORY:"""
         STEP 3: HTML extracts ONLY links + dates
         STEP 4: If NO PDF → Full HTML parsing + Gemma for category
         
+        CRITICAL: ALL FreeJobAlert links are BLOCKED.
+        
         Args:
             job_listing: Basic job info from listing page
             html: HTML content of job details page
             details_url: URL of the job details page
             
         Returns:
-            Complete job data with blog content
+            Complete job data with blog content (NO FreeJobAlert links)
         """
         
         logger.info("="*60)
@@ -424,12 +455,12 @@ CATEGORY:"""
         final_data = {**job_listing, **structured_data}
         final_data['data_source'] = source
         
-        # Filter FreeJobAlert links
-        link_fields = ['application_url', 'official_website', 'organization_url', 'pdf_url']
+        # CRITICAL: Final validation - ensure NO FreeJobAlert links
+        link_fields = ['pdf_url', 'official_website']
         for field in link_fields:
             url = final_data.get(field)
             if url and self._is_freejobalert_link(url):
-                logger.info(f"🚫 Filtered FreeJobAlert link from {field}")
+                logger.warning(f"🚨 CRITICAL: Found FreeJobAlert link in {field}, removing!")
                 final_data[field] = None
         
         # Log final summary
@@ -444,6 +475,8 @@ CATEGORY:"""
             logger.info(f"   ✓ Vacancies: {final_data['vacancies']}")
         if final_data.get('post_date'):
             logger.info(f"   ✓ Post Date: {final_data['post_date']}")
+        if final_data.get('official_website'):
+            logger.info(f"   ✓ Official Website: {final_data['official_website'][:60]}...")
         logger.info("="*60)
         
         # Generate SEO blog
