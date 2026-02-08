@@ -4,6 +4,7 @@ Extracts all fields using CSS selectors, regex patterns, and HTML parsing.
 Special focus on vacancies field to avoid extracting year (2026).
 
 CRITICAL: Filters out ALL FreeJobAlert links.
+CRITICAL: job_url must be the Apply Online link, NOT FreeJobAlert URL.
 """
 
 import logging
@@ -70,17 +71,18 @@ class RobustJobParser:
         
         Args:
             html: HTML content of job page
-            details_url: URL of the job page
+            details_url: URL of the job page (FreeJobAlert source)
             
         Returns:
             Dictionary with extracted job data (NO FreeJobAlert links)
         """
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Initialize result - REMOVED organization_url and application_url
+        # Initialize result
+        # CRITICAL: job_url will be set to "Apply Online" link, NOT details_url
         details = {
-            'job_url': details_url,
-            'freejobalert_url': details_url,
+            'job_url': None,  # Will be set to Apply Online link (or NULL)
+            'freejobalert_url': details_url,  # FreeJobAlert source page (for tracking)
             'vacancies': None,
             'title': '',
             'organization': '',
@@ -130,7 +132,7 @@ class RobustJobParser:
             details['last_date'] = dates['last_date']
         details['important_dates'] = dates.get('all_dates', {})
         
-        # Extract URLs (PDF, official website) - WITH STRICT FILTERING
+        # Extract URLs (PDF, Apply Online, official website) - WITH STRICT FILTERING
         urls = self._extract_urls(content)
         details.update(urls)
         
@@ -390,17 +392,15 @@ class RobustJobParser:
     def _extract_urls(self, content: BeautifulSoup) -> Dict:
         """Extract URLs with CRITICAL FreeJobAlert filtering.
         
-        ONLY extracts:
+        Extracts:
+        - job_url: "Apply Online" link (official application portal)
         - pdf_url: Official PDF notification
         - official_website: Official organization website
-        
-        REMOVED:
-        - application_url (unnecessary)
-        - organization_url (duplicate of official_website)
         
         ALL FreeJobAlert links are BLOCKED.
         """
         urls = {
+            'job_url': None,  # Apply Online link (NULL if not found)
             'pdf_url': '',
             'official_notification_pdf': '',
             'official_website': '',
@@ -429,19 +429,35 @@ class RobustJobParser:
             if link.parent:
                 parent_text = link.parent.get_text(strip=True).lower()
             
-            # Identify link type
-            # PDF - Only from official sources
-            if '.pdf' in href.lower():
+            # Identify link type based on text and context
+            
+            # 1. Apply Online button/link (HIGHEST PRIORITY)
+            if any(keyword in text for keyword in ['apply online', 'click here to apply', 'apply now', 'apply here']):
+                if not urls['job_url']:
+                    urls['job_url'] = href
+                    logger.info(f"✓ Found Apply Online link: {href[:70]}...")
+            
+            elif 'apply' in parent_text and ('online' in parent_text or 'click' in text):
+                if not urls['job_url']:
+                    urls['job_url'] = href
+                    logger.info(f"✓ Found Apply Online link (from context): {href[:70]}...")
+            
+            # 2. PDF - Only from official sources
+            elif '.pdf' in href.lower():
                 if not urls['pdf_url']:
                     urls['pdf_url'] = href
                     urls['official_notification_pdf'] = href
                     logger.info(f"✓ Found official PDF: {href[:70]}...")
             
-            # Official Website - Only official domain links
-            elif 'official website' in parent_text or 'official website' in text or 'official site' in text:
+            # 3. Official Website - Only official domain links
+            elif 'official website' in parent_text or 'official website' in text or 'official site' in text or 'visit website' in text:
                 if not urls['official_website']:
                     urls['official_website'] = href
                     logger.info(f"✓ Found official website: {href[:70]}...")
+        
+        # Log if Apply Online link not found
+        if not urls['job_url']:
+            logger.warning("⚠️  Apply Online link not found - job_url will be NULL")
         
         return urls
     
