@@ -72,9 +72,6 @@ def process_job(
         # Details already includes merged data and blog content
         job_data = details
         
-        # Initialize PDF-related fields
-        job_data['gdrive_link'] = None
-        
         # Handle PDF based on source
         pdf_url = job_data.get('pdf_url') or job_data.get('official_notification_pdf')
         
@@ -83,7 +80,7 @@ def process_job(
             needs_upload = is_freejobalert_pdf(pdf_url) or job_data.get('pdf_needs_upload', False)
             
             if needs_upload:
-                # FreeJobAlert PDF -> Upload to Google Drive
+                # FreeJobAlert PDF -> Upload to Google Drive and save Drive link in pdf_url
                 logger.info(f"FreeJobAlert PDF detected: {pdf_url[:60]}...")
                 logger.info(f"Downloading and uploading to Google Drive...")
                 
@@ -102,11 +99,13 @@ def process_job(
                     gdrive_link = gdrive_uploader.upload_pdf_and_get_link(pdf_path)
                     
                     if gdrive_link:
-                        # Save Google Drive link
-                        job_data['gdrive_link'] = gdrive_link
+                        # Save Google Drive link directly to pdf_url
+                        job_data['pdf_url'] = gdrive_link
                         logger.info(f"[OK] PDF uploaded to Google Drive: {gdrive_link[:60]}...")
                     else:
                         logger.warning(f"Failed to upload PDF to Google Drive")
+                        # Clear pdf_url since we couldn't upload FreeJobAlert PDF
+                        job_data['pdf_url'] = None
                     
                     # Clean up temp file
                     try:
@@ -115,18 +114,19 @@ def process_job(
                         pass
                 else:
                     logger.warning(f"Failed to download PDF from: {pdf_url[:60]}...")
+                    # Clear pdf_url since we couldn't download FreeJobAlert PDF
+                    job_data['pdf_url'] = None
             else:
-                # External PDF -> Keep original URL
+                # External PDF -> Keep original URL in pdf_url
                 logger.info(f"External PDF (no upload needed): {pdf_url[:60]}...")
                 job_data['pdf_url'] = pdf_url
         
         # Insert into Supabase
         if supabase_client.insert_job(job_data):
             logger.info(f"Successfully saved: {job['title']}")
-            if job_data.get('gdrive_link'):
-                logger.info(f"  -> Google Drive: {job_data['gdrive_link'][:60]}...")
             if job_data.get('pdf_url'):
-                logger.info(f"  -> PDF URL: {job_data['pdf_url'][:60]}...")
+                pdf_source = "Google Drive" if 'drive.google.com' in job_data['pdf_url'] else "External"
+                logger.info(f"  -> PDF ({pdf_source}): {job_data['pdf_url'][:60]}...")
             if job_data.get('blog_article'):
                 logger.info(f"  -> Blog: {len(job_data['blog_article'])} characters")
             return True
