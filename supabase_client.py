@@ -115,15 +115,16 @@ class SupabaseClient:
             return False
     
     def insert_job(self, job_data: Dict) -> Optional[Dict]:
-        """Insert a new job into the database."""
+        """Insert a new job into the database.
+        
+        CRITICAL: job_url must be Apply Online link, never FreeJobAlert URL.
+        """
         try:
-            # Get URLs
-            fja_url = job_data.get('job_url') or job_data.get('details_url')  # FreeJobAlert article URL
-            application_url = job_data.get('application_url')  # Organization's application URL
-            official_website = job_data.get('official_website') or job_data.get('organization_url')
+            # Get source URL (FreeJobAlert article page)
+            fja_url = job_data.get('freejobalert_url') or job_data.get('details_url')
             
             if not fja_url:
-                logger.error("Job data missing FreeJobAlert URL")
+                logger.error("Job data missing FreeJobAlert source URL")
                 return None
             
             # Check if job already exists using FreeJobAlert URL
@@ -150,22 +151,25 @@ class SupabaseClient:
                 'advt_no': job_data.get('advt_no'),
             }
             
-            # IMPORTANT: job_url should be the organization's application URL, NOT FreeJobAlert URL
-            # Priority: application_url > official_website > fja_url (fallback)
-            if application_url:
-                insert_data['job_url'] = application_url
-                logger.info(f"Using application URL as job_url: {application_url[:80]}")
-            elif official_website:
-                insert_data['job_url'] = official_website
-                logger.info(f"Using official website as job_url: {official_website[:80]}")
+            # CRITICAL: job_url is Apply Online link from parser (can be NULL)
+            job_url = job_data.get('job_url')  # From parser extraction
+            
+            if job_url:
+                # Verify it's not a FreeJobAlert link (should never happen but double-check)
+                if self._is_freejobalert_url(job_url):
+                    logger.error(f"🚨 CRITICAL: job_url contains FreeJobAlert link! This should not happen: {job_url[:70]}")
+                    job_url = None  # Reject it
+                else:
+                    insert_data['job_url'] = job_url
+                    logger.info(f"✓ Apply Online link: {job_url[:70]}...")
             else:
-                # Fallback to FreeJobAlert URL if no organization URL found
-                insert_data['job_url'] = fja_url
-                logger.warning(f"No organization URL found, using FreeJobAlert URL: {fja_url[:80]}")
+                # NULL is acceptable if no Apply Online link found
+                logger.info("⚠️  No Apply Online link found - job_url will be NULL")
             
             # Store FreeJobAlert source URL for tracking (ONLY if column exists)
             if self.has_fja_url_column:
                 insert_data['freejobalert_url'] = fja_url
+                logger.debug(f"FreeJobAlert source: {fja_url[:70]}...")
             
             # Add dates
             if post_date:
@@ -181,30 +185,25 @@ class SupabaseClient:
             if job_data.get('location'):
                 insert_data['location'] = job_data.get('location')
             
-            # PDF URLs - Handle FreeJobAlert PDFs specially
-            pdf_needs_upload = job_data.get('pdf_needs_upload', False)
-            official_pdf = job_data.get('official_notification_pdf')
-            
-            if official_pdf:
-                if pdf_needs_upload:
-                    # FreeJobAlert hosted PDF - don't save, will be uploaded to Drive later
-                    logger.info(f"FreeJobAlert PDF detected (will be uploaded to Drive): {official_pdf[:60]}")
-                    # Leave pdf_url empty, will be filled with Drive link later
+            # PDF URL - Only official organization PDFs (never FreeJobAlert)
+            pdf_url = job_data.get('pdf_url') or job_data.get('official_notification_pdf')
+            if pdf_url:
+                # Double-check not FreeJobAlert
+                if self._is_freejobalert_url(pdf_url):
+                    logger.warning(f"🚨 Rejected FreeJobAlert PDF URL: {pdf_url[:70]}")
                 else:
-                    # External PDF - save directly
-                    insert_data['pdf_url'] = official_pdf
+                    insert_data['pdf_url'] = pdf_url
             
-            # Application and website URLs
-            if application_url:
-                insert_data['application_url'] = application_url
-            
+            # Official website - Only official organization websites (never FreeJobAlert)
+            official_website = job_data.get('official_website')
             if official_website:
-                insert_data['official_website'] = official_website
+                # Double-check not FreeJobAlert
+                if self._is_freejobalert_url(official_website):
+                    logger.warning(f"🚨 Rejected FreeJobAlert official_website: {official_website[:70]}")
+                else:
+                    insert_data['official_website'] = official_website
             
-            if job_data.get('organization_url'):
-                insert_data['organization_url'] = job_data.get('organization_url')
-            
-            # Google Drive link (if already provided)
+            # Google Drive link (if PDF was uploaded)
             if job_data.get('gdrive_link'):
                 insert_data['gdrive_link'] = job_data.get('gdrive_link')
             
@@ -272,9 +271,6 @@ class SupabaseClient:
             
             # Log what we're inserting for debugging
             logger.debug(f"Inserting job with {len(insert_data)} fields")
-            logger.info(f"Job URL (organization): {insert_data.get('job_url', 'N/A')[:80]}")
-            if self.has_fja_url_column:
-                logger.info(f"Source URL (FreeJobAlert): {fja_url[:80]}")
             
             # Log blog content status
             if insert_data.get('blog_article'):
@@ -290,12 +286,12 @@ class SupabaseClient:
                 logger.info(f"Successfully inserted job: {job_data.get('title')}")
                 if insert_data.get('pdf_url'):
                     logger.info(f"  - PDF URL: {insert_data['pdf_url'][:80]}")
-                if insert_data.get('application_url'):
-                    logger.info(f"  - Apply URL: {insert_data['application_url'][:80]}")
+                if insert_data.get('job_url'):
+                    logger.info(f"  - Apply URL: {insert_data['job_url'][:80]}")
+                if insert_data.get('official_website'):
+                    logger.info(f"  - Official Site: {insert_data['official_website'][:80]}")
                 if insert_data.get('blog_article'):
                     logger.info(f"  - Blog: {len(insert_data['blog_article'])} chars")
-                if pdf_needs_upload:
-                    logger.info(f"  ⚠️ FreeJobAlert PDF needs Drive upload")
                 return result.data[0]
             else:
                 logger.warning(f"No data returned after inserting: {job_data.get('title')}")
