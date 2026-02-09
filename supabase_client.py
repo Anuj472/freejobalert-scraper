@@ -185,14 +185,17 @@ class SupabaseClient:
             if job_data.get('location'):
                 insert_data['location'] = job_data.get('location')
             
-            # PDF URL - Only official organization PDFs (never FreeJobAlert)
+            # PDF URL - Can be organization PDF OR Google Drive link (uploaded FreeJobAlert PDFs)
             pdf_url = job_data.get('pdf_url') or job_data.get('official_notification_pdf')
             if pdf_url:
-                # Double-check not FreeJobAlert
+                # Double-check not FreeJobAlert (should already be handled, but verify)
                 if self._is_freejobalert_url(pdf_url):
                     logger.warning(f"🚨 Rejected FreeJobAlert PDF URL: {pdf_url[:70]}")
                 else:
                     insert_data['pdf_url'] = pdf_url
+                    # Log whether it's a Google Drive link or external PDF
+                    pdf_source = "Google Drive" if 'drive.google.com' in pdf_url else "Organization"
+                    logger.debug(f"PDF URL ({pdf_source}): {pdf_url[:70]}...")
             
             # Official website - Only official organization websites (never FreeJobAlert)
             official_website = job_data.get('official_website')
@@ -202,10 +205,6 @@ class SupabaseClient:
                     logger.warning(f"🚨 Rejected FreeJobAlert official_website: {official_website[:70]}")
                 else:
                     insert_data['official_website'] = official_website
-            
-            # Google Drive link (if PDF was uploaded)
-            if job_data.get('gdrive_link'):
-                insert_data['gdrive_link'] = job_data.get('gdrive_link')
             
             # Text fields
             if job_data.get('full_description'):
@@ -285,7 +284,8 @@ class SupabaseClient:
             if result.data:
                 logger.info(f"Successfully inserted job: {job_data.get('title')}")
                 if insert_data.get('pdf_url'):
-                    logger.info(f"  - PDF URL: {insert_data['pdf_url'][:80]}")
+                    pdf_source = "Google Drive" if 'drive.google.com' in insert_data['pdf_url'] else "External"
+                    logger.info(f"  - PDF ({pdf_source}): {insert_data['pdf_url'][:80]}")
                 if insert_data.get('job_url'):
                     logger.info(f"  - Apply URL: {insert_data['job_url'][:80]}")
                 if insert_data.get('official_website'):
@@ -327,15 +327,6 @@ class SupabaseClient:
             logger.error(f"Error updating job {job_identifier}: {e}")
             return None
     
-    def update_gdrive_link(self, job_url: str, gdrive_link: str) -> bool:
-        """Update Google Drive link for a job."""
-        try:
-            result = self.update_job(job_url, {'gdrive_link': gdrive_link})
-            return result is not None
-        except Exception as e:
-            logger.error(f"Error updating Google Drive link: {e}")
-            return False
-    
     def batch_insert_jobs(self, jobs: List[Dict]) -> int:
         """Insert multiple jobs in batch."""
         inserted_count = 0
@@ -347,23 +338,6 @@ class SupabaseClient:
         
         logger.info(f"Batch insert complete: {inserted_count}/{len(jobs)} jobs inserted")
         return inserted_count
-    
-    def get_jobs_without_gdrive_link(self, limit: int = 100) -> List[Dict]:
-        """Get jobs that don't have a Google Drive link yet but have empty pdf_url.
-        These are jobs with FreeJobAlert PDFs that need to be uploaded.
-        """
-        try:
-            result = self.client.table('jobs') \
-                .select('*') \
-                .is_('gdrive_link', 'null') \
-                .is_('pdf_url', 'null') \
-                .limit(limit) \
-                .execute()
-            
-            return result.data if result.data else []
-        except Exception as e:
-            logger.error(f"Error fetching jobs without Google Drive links: {e}")
-            return []
     
     def get_recent_jobs(self, days: int = 7, limit: int = 100) -> List[Dict]:
         """Get recently scraped jobs."""
