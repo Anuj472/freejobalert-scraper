@@ -41,6 +41,30 @@ class RobustJobParser:
         r'(\d{1,2}\s+\w+\s+\d{4})',  # DD Month YYYY
     ]
     
+    # Common Indian states and major cities for location detection
+    LOCATION_KEYWORDS = [
+        # States
+        'andhra pradesh', 'arunachal pradesh', 'assam', 'bihar', 'chhattisgarh',
+        'goa', 'gujarat', 'haryana', 'himachal pradesh', 'jharkhand', 'karnataka',
+        'kerala', 'madhya pradesh', 'maharashtra', 'manipur', 'meghalaya', 'mizoram',
+        'nagaland', 'odisha', 'punjab', 'rajasthan', 'sikkim', 'tamil nadu',
+        'telangana', 'tripura', 'uttar pradesh', 'uttarakhand', 'west bengal',
+        # UTs
+        'delhi', 'jammu and kashmir', 'ladakh', 'chandigarh', 'puducherry',
+        'lakshadweep', 'andaman and nicobar',
+        # Major cities
+        'mumbai', 'bangalore', 'bengaluru', 'hyderabad', 'chennai', 'kolkata',
+        'pune', 'ahmedabad', 'surat', 'jaipur', 'lucknow', 'kanpur', 'nagpur',
+        'indore', 'thane', 'bhopal', 'visakhapatnam', 'pimpri-chinchwad', 'patna',
+        'vadodara', 'ghaziabad', 'ludhiana', 'agra', 'nashik', 'faridabad',
+        'meerut', 'rajkot', 'varanasi', 'srinagar', 'aurangabad', 'dhanbad',
+        'amritsar', 'navi mumbai', 'allahabad', 'ranchi', 'howrah', 'coimbatore',
+        'jabalpur', 'gwalior', 'vijayawada', 'jodhpur', 'madurai', 'raipur',
+        'kota', 'chandigarh', 'guwahati', 'dehradun', 'noida', 'greater noida',
+        # Multi-location patterns
+        'all india', 'pan india', 'across india', 'various locations', 'multiple locations'
+    ]
+    
     def __init__(self):
         """Initialize parser."""
         pass
@@ -179,7 +203,7 @@ class RobustJobParser:
                     if not details['application_fee']:
                         details['application_fee'] = value
                 
-                elif 'location' in key_lower:
+                elif 'location' in key_lower or 'place' in key_lower or 'posting' in key_lower:
                     if not details['location']:
                         details['location'] = value
                 
@@ -224,6 +248,13 @@ class RobustJobParser:
             
             elif 'qualification' in heading_text and not details['qualification']:
                 details['qualification'] = section_text[:300]
+            
+            elif ('location' in heading_text or 'place' in heading_text or 'posting' in heading_text) and not details['location']:
+                details['location'] = section_text[:200]
+        
+        # Extract location using multiple methods if not found yet
+        if not details['location']:
+            details['location'] = self._extract_location(details['title'], full_text, content)
         
         # Full description (for reference)
         for script in content(["script", "style", "iframe"]):
@@ -238,6 +269,61 @@ class RobustJobParser:
                 details['organization'] = match.group(1).strip()
         
         return details
+    
+    def _extract_location(self, title: str, full_text: str, content: BeautifulSoup) -> str:
+        """Extract location using multiple detection methods.
+        
+        Methods:
+        1. Pattern matching ("Location:", "Job Location:", etc.)
+        2. Known state/city names in text
+        3. Organization name patterns (e.g., "Delhi Police", "Punjab Government")
+        """
+        # Method 1: Direct location patterns
+        location_patterns = [
+            r'(?:job\s+)?location\s*:?\s*([A-Za-z\s,/&\-]+?)(?:\.|\n|$)',
+            r'place\s+of\s+posting\s*:?\s*([A-Za-z\s,/&\-]+?)(?:\.|\n|$)',
+            r'work\s+location\s*:?\s*([A-Za-z\s,/&\-]+?)(?:\.|\n|$)',
+            r'posting\s+location\s*:?\s*([A-Za-z\s,/&\-]+?)(?:\.|\n|$)',
+        ]
+        
+        for pattern in location_patterns:
+            match = re.search(pattern, full_text, re.IGNORECASE)
+            if match:
+                location = match.group(1).strip()
+                # Clean up and validate
+                location = re.sub(r'\s+', ' ', location)
+                if len(location) > 3 and len(location) < 100:
+                    logger.info(f"  [OK] Found location from pattern: {location}")
+                    return location
+        
+        # Method 2: Search for known states/cities in content
+        full_text_lower = full_text.lower()
+        found_locations = []
+        
+        for location in self.LOCATION_KEYWORDS:
+            if location in full_text_lower:
+                found_locations.append(location.title())
+        
+        if found_locations:
+            # Return first found or combine if multiple
+            if len(found_locations) == 1:
+                logger.info(f"  [OK] Found location from keywords: {found_locations[0]}")
+                return found_locations[0]
+            elif len(found_locations) <= 3:
+                combined = ', '.join(found_locations[:3])
+                logger.info(f"  [OK] Found multiple locations: {combined}")
+                return combined
+        
+        # Method 3: Extract from organization name in title
+        # E.g., "Delhi Police Recruitment" -> "Delhi"
+        if title:
+            for location in self.LOCATION_KEYWORDS:
+                if location in title.lower():
+                    logger.info(f"  [OK] Found location from title: {location.title()}")
+                    return location.title()
+        
+        logger.debug("  [WARN] Could not extract location")
+        return ''
     
     def _extract_vacancies(self, title: str, full_text: str, content: BeautifulSoup) -> Optional[int]:
         """Extract vacancy count using multiple methods.
