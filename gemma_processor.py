@@ -1,4 +1,4 @@
-"""Gemma 3 12B Multimodal Processor - IMPROVED VERSION with focused prompts."""
+"""Gemma 3 12B Multimodal Processor - IMPROVED VERSION with 8-bit quantization."""
 
 import requests
 import json
@@ -28,10 +28,10 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 class GemmaProcessor:
-    """Process PDFs and generate blogs using Gemma 3 with focused prompts."""
+    """Process PDFs and generate blogs using Gemma 3 with 8-bit quantization."""
     
     def __init__(self):
-        """Initialize Gemma 3 12B processor."""
+        """Initialize Gemma 3 12B processor with optimized settings."""
         self.ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
         self.model = "gemma3:12b"
         self.temp_dir = Path('temp_pdfs')
@@ -40,8 +40,9 @@ class GemmaProcessor:
         if self._check_model_available():
             logger.info(f"✓ {self.model} initialized")
             logger.info(f"  - Vision: ✓")
-            logger.info(f"  - Context: 128K tokens")
-            logger.info(f"  - VRAM: 8.1 GB")
+            logger.info(f"  - Quantization: 8-bit (faster inference)")
+            logger.info(f"  - Context: 32K tokens")
+            logger.info(f"  - VRAM: ~4-5 GB (optimized)")
         else:
             logger.warning(f"⚠️  {self.model} not found!")
             logger.warning(f"   Run: ollama pull {self.model}")
@@ -140,8 +141,8 @@ class GemmaProcessor:
         DO NOT extract post_date - HTML parser will handle that.
         """
         
-        # Truncate text to fit context
-        text = text[:50000]
+        # Truncate text to fit context (32K tokens)
+        text = text[:40000]  # Reduced from 50K
         
         prompt = f"""You are analyzing a government job recruitment notification document.
 
@@ -274,7 +275,7 @@ REMEMBER:
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=None, timeout=120)
+        return self._call_gemma(prompt, images=None, timeout=90)  # Reduced from 120s
     
     def _extract_from_images_focused(self, images: List) -> Optional[Dict]:
         """
@@ -395,7 +396,7 @@ REMEMBER:
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=images_base64, timeout=120)
+        return self._call_gemma(prompt, images=images_base64, timeout=90)  # Reduced from 120s
     
     def generate_blog(self, job_data: Dict) -> Optional[Dict]:
         """
@@ -481,11 +482,11 @@ CRITICAL:
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=None, for_blog=True, timeout=300)
+        return self._call_gemma(prompt, images=None, for_blog=True, timeout=180)  # Reduced from 300s
     
     def _call_gemma(self, prompt: str, images: Optional[List[str]] = None, 
-                    for_blog: bool = False, timeout: int = 120) -> Optional[Dict]:
-        """Call Gemma 3 12B model."""
+                    for_blog: bool = False, timeout: int = 90) -> Optional[Dict]:
+        """Call Gemma 3 12B model with 8-bit quantization optimizations."""
         
         try:
             messages = [{
@@ -505,8 +506,12 @@ JSON OUTPUT:"""
                     "format": "json",
                     "options": {
                         "temperature": 0.7 if for_blog else 0.1,  # Lower temp for extraction
-                        "num_predict": 2500 if for_blog else 2048,  # Shorter blog
-                        "num_ctx": 128000
+                        "num_predict": 2500 if for_blog else 2048,  # Token limit
+                        "num_ctx": 32768,  # Reduced from 128K for speed (32K is enough)
+                        "num_gpu": 99,  # Force GPU usage
+                        "num_thread": 8,  # CPU threads for CPU layers
+                        "f16_kv": True,  # Use FP16 for key/value cache (faster)
+                        "low_vram": False,  # We want speed, not VRAM savings
                     }
                 },
                 timeout=timeout
