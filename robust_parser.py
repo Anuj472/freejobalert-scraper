@@ -90,6 +90,52 @@ class RobustJobParser:
         
         return False
     
+    def _clean_date(self, date_str: str) -> str:
+        """Clean date string by extracting only DD-MM-YYYY or DD/MM/YYYY pattern.
+        
+        Examples:
+        - "2026 (23:59 Hours)-03-03" → "03-03-2026"
+        - "2026 (before 15th February 2026)-02-15" → "15-02-2026"
+        - "15-02-2026" → "15-02-2026"
+        - "15/02/2026" → "15/02/2026"
+        """
+        if not date_str:
+            return ''
+        
+        # First try to find DD-MM-YYYY or DD/MM/YYYY pattern
+        date_match = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{4})', date_str)
+        if date_match:
+            clean = date_match.group(1)
+            # If it's in format MM-DD-YYYY or looks wrong, try to fix
+            parts = re.split(r'[-/]', clean)
+            if len(parts) == 3:
+                day, month, year = parts
+                # Ensure day and month are reasonable
+                if int(day) > 31 or int(month) > 12:
+                    # Might be swapped, try reversing
+                    return f"{month}-{day}-{year}"
+                return clean
+        
+        # Try DD Month YYYY format
+        month_match = re.search(r'(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})', 
+                                date_str, re.IGNORECASE)
+        if month_match:
+            day = month_match.group(1).zfill(2)
+            month_name = month_match.group(2).lower()
+            year = month_match.group(3)
+            
+            # Convert month name to number
+            month_map = {
+                'january': '01', 'february': '02', 'march': '03', 'april': '04',
+                'may': '05', 'june': '06', 'july': '07', 'august': '08',
+                'september': '09', 'october': '10', 'november': '11', 'december': '12'
+            }
+            month = month_map.get(month_name, '01')
+            return f"{day}-{month}-{year}"
+        
+        # If nothing found, return original (will be validated by supabase_client)
+        return date_str.strip()
+    
     def parse_job_details(self, html: str, details_url: str) -> Dict:
         """Parse job details from HTML using CSS selectors only.
         
@@ -151,10 +197,16 @@ class RobustJobParser:
         # Extract dates
         dates = self._extract_dates(full_text, content)
         if dates.get('post_date'):
-            details['post_date'] = dates['post_date']
+            details['post_date'] = self._clean_date(dates['post_date'])
         if dates.get('last_date'):
-            details['last_date'] = dates['last_date']
-        details['important_dates'] = dates.get('all_dates', {})
+            details['last_date'] = self._clean_date(dates['last_date'])
+        
+        # Clean dates in important_dates dict
+        if dates.get('all_dates'):
+            cleaned_dates = {}
+            for key, val in dates['all_dates'].items():
+                cleaned_dates[key] = self._clean_date(val)
+            details['important_dates'] = cleaned_dates
         
         # Extract URLs (PDF, Apply Online, official website) - WITH STRICT FILTERING
         urls = self._extract_urls(content)
@@ -213,11 +265,11 @@ class RobustJobParser:
                 
                 elif 'last date' in key_lower or 'closing date' in key_lower:
                     if not details['last_date']:
-                        details['last_date'] = value
+                        details['last_date'] = self._clean_date(value)
                 
                 elif 'post date' in key_lower or 'publish' in key_lower:
                     if not details['post_date']:
-                        details['post_date'] = value
+                        details['post_date'] = self._clean_date(value)
         
         # Extract from headings and sections
         headings = content.find_all(['h2', 'h3', 'h4', 'strong'])
@@ -462,16 +514,22 @@ class RobustJobParser:
         }
         
         for keyword, field in date_keywords.items():
-            # Find text around keyword
-            pattern = rf'{keyword}\s*:?\s*([\d\-/]+(?:\s+to\s+[\d\-/]+)?|\d{{1,2}}\s+\w+\s+\d{{4}})'
+            # Enhanced pattern to capture more context but extract clean date
+            # Look for the keyword followed by date-like patterns
+            pattern = rf'{keyword}\s*:?\s*([^\n\.]+?)(?:(?=last date)|(?=post date)|(?=exam date)|(?=result date)|\.|\n|$)'
             match = re.search(pattern, full_text, re.IGNORECASE)
             if match:
-                date_value = match.group(1).strip()
+                date_context = match.group(1).strip()
                 
-                if field in ['last_date', 'post_date']:
-                    dates[field] = date_value
-                else:
-                    dates['all_dates'][field] = date_value
+                # Now extract just the date from the context
+                # This will handle cases like "03 March 2026 (23:59 Hours)"
+                date_value = self._clean_date(date_context)
+                
+                if date_value:
+                    if field in ['last_date', 'post_date']:
+                        dates[field] = date_value
+                    else:
+                        dates['all_dates'][field] = date_value
         
         return dates
     
