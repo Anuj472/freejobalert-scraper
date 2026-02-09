@@ -5,6 +5,7 @@ import json
 import logging
 import base64
 import os
+import re
 from pathlib import Path
 from io import BytesIO
 from typing import Dict, List, Optional
@@ -61,6 +62,28 @@ class GemmaProcessor:
     def is_available(self) -> bool:
         """Check if processor is available."""
         return self._check_model_available()
+    
+    def _clean_freejobalert_links(self, text: str) -> str:
+        """Remove all FreeJobAlert links from text.
+        
+        This prevents FreeJobAlert URLs from appearing in generated blogs.
+        """
+        if not text:
+            return text
+        
+        # Remove all freejobalert.com URLs (http/https variants)
+        text = re.sub(r'https?://(?:www\.)?freejobalert\.com[^\s<>"]+', '[LINK REMOVED]', text)
+        
+        # Remove markdown links containing freejobalert
+        text = re.sub(r'\[([^\]]+)\]\(https?://(?:www\.)?freejobalert\.com[^\)]+\)', r'\1', text)
+        
+        # Remove any remaining "freejobalert.com" text
+        text = re.sub(r'(?:www\.)?freejobalert\.com[^\s<>"]*', '[LINK REMOVED]', text, flags=re.IGNORECASE)
+        
+        # Clean up multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text.strip()
     
     def process_pdf_url(self, pdf_url: str) -> Optional[Dict]:
         """
@@ -401,19 +424,36 @@ JSON OUTPUT:"""
     def generate_blog(self, job_data: Dict) -> Optional[Dict]:
         """
         IMPROVED: Generate concise SEO blog UNDER 1000 words.
+        CRITICAL: Clean FreeJobAlert links from all text fields before generating blog.
         """
         
         if not self.is_available():
             logger.warning("Gemma 3 not available, skipping blog generation")
             return None
         
-        # Prepare clean data (remove None values)
-        clean_data = {k: v for k, v in job_data.items() if v is not None}
+        # CRITICAL: Clean FreeJobAlert links from all text fields
+        cleaned_data = {}
+        for key, value in job_data.items():
+            if value is None:
+                continue
+            
+            # Clean text fields
+            if isinstance(value, str):
+                cleaned_value = self._clean_freejobalert_links(value)
+                if cleaned_value:  # Only include if not empty after cleaning
+                    cleaned_data[key] = cleaned_value
+            else:
+                cleaned_data[key] = value
+        
+        # Log if we cleaned any links
+        original_count = sum(1 for v in job_data.values() if v and isinstance(v, str) and 'freejobalert' in v.lower())
+        if original_count > 0:
+            logger.info(f"🧹 Cleaned FreeJobAlert links from {original_count} fields before blog generation")
         
         prompt = f"""Create a CONCISE, SEO-optimized blog post for this job recruitment.
 
 JOB DATA:
-{json.dumps(clean_data, indent=2)}
+{json.dumps(cleaned_data, indent=2)}
 
 REQUIREMENTS:
 1. WORD LIMIT: Maximum 800-900 words (be concise!)
@@ -435,6 +475,7 @@ REQUIREMENTS:
    - Focus on KEY information only
    - NO fluff or repetition
    - Be helpful and direct
+   - DO NOT include any URLs or web links in the blog
 
 6. Provide 5 one-liner highlights and 5 FAQs
 
@@ -479,10 +520,21 @@ CRITICAL:
 - Be concise and to-the-point
 - Focus on IMPORTANT details only
 - Use tables for dates/fees
+- NO URLs or web links
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=None, for_blog=True, timeout=180)  # Reduced from 300s
+        result = self._call_gemma(prompt, images=None, for_blog=True, timeout=180)  # Reduced from 300s
+        
+        # Double-check: Clean any remaining FreeJobAlert links from generated blog
+        if result and result.get('article'):
+            original_article = result['article']
+            cleaned_article = self._clean_freejobalert_links(original_article)
+            if cleaned_article != original_article:
+                logger.warning("⚠️  Gemma included FreeJobAlert links in blog - cleaned them")
+                result['article'] = cleaned_article
+        
+        return result
     
     def _call_gemma(self, prompt: str, images: Optional[List[str]] = None, 
                     for_blog: bool = False, timeout: int = 90) -> Optional[Dict]:
