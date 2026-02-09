@@ -475,6 +475,8 @@ CATEGORY:"""
             logger.info(f"   ✓ Vacancies: {final_data['vacancies']}")
         if final_data.get('post_date'):
             logger.info(f"   ✓ Post Date: {final_data['post_date']}")
+        if final_data.get('last_date'):
+            logger.info(f"   ✓ Last Date: {final_data['last_date']}")
         if final_data.get('official_website'):
             logger.info(f"   ✓ Official Website: {final_data['official_website'][:60]}...")
         logger.info("="*60)
