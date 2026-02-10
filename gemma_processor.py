@@ -470,7 +470,7 @@ JSON OUTPUT:"""
             else:
                 cleaned_input[key] = value
         
-        prompt = f"""Create a CONCISE, SEO-optimized blog post for this job recruitment.
+        prompt = f"""Create a COMPREHENSIVE, SEO-optimized blog post for this job recruitment.
 
 CRITICAL RULES - FOLLOW STRICTLY:
 1. NEVER mention "freejobalert" or "freejobalert.com" anywhere
@@ -482,48 +482,75 @@ JOB DATA:
 {json.dumps(cleaned_input, indent=2)}
 
 REQUIREMENTS:
-1. Word Limit: 800-900 words maximum
+1. Word Limit: 1500-2000 words (IMPORTANT: Must be comprehensive and detailed)
 2. SEO Title: 60-70 characters
 3. Meta Description: 150-160 characters
 4. Blog Structure:
-   - Brief Overview (2-3 sentences)
-   - 🎯 Key Highlights (5 bullet points with emojis)
+   - Brief Overview (3-4 sentences)
+   - 🎯 Key Highlights (8-10 bullet points with emojis)
    - 📅 Important Dates (markdown table)
-   - 📋 Eligibility
-   - 💰 Salary & Fee
-   - 📝 How to Apply (4-5 steps)
-   - ❓ FAQs (5 questions)
+   - 📋 Detailed Eligibility Criteria (comprehensive section)
+   - 💰 Salary Details & Application Fee (detailed breakdown)
+   - 📝 How to Apply (8-10 detailed steps with tips)
+   - 📄 Required Documents (comprehensive list)
+   - ⚠️ Important Instructions (tips and warnings)
+   - ❓ Frequently Asked Questions (10-12 questions with detailed answers)
 
-5. Use markdown headings (##, ###)
-6. Add emojis for engagement
-7. Be concise and clear
-8. NO URLs or links
+5. Writing Style:
+   - Use markdown headings (##, ###)
+   - Add emojis for engagement
+   - Be detailed and comprehensive
+   - Include specific details and numbers
+   - Write helpful tips and advice
+   - Make it informative and valuable
+   - NO URLs or links
+
+6. Content Depth:
+   - Expand on eligibility criteria with examples
+   - Provide detailed selection process information
+   - Include preparation tips if applicable
+   - Add context about the organization
+   - Explain technical terms
+   - Give practical advice for applicants
 
 Return ONLY valid JSON:
 {{
     "seo_title": "Job Title 2026 - X Posts | Last Date",
     "meta_description": "Complete details about...",
-    "article": "Full markdown blog (800-900 words)...",
+    "article": "Full markdown blog (1500-2000 words)...",
     "highlights": [
         "Total Posts: X",
         "Last Date: DD-MM-YYYY",
         "Salary: Rs. X-Y",
         "Qualification: ...",
-        "Apply Mode: Online/Offline"
+        "Apply Mode: Online/Offline",
+        "Selection: ...",
+        "Age Limit: ...",
+        "Application Fee: ..."
     ],
     "faqs": [
         {{
-            "question": "What is the last date?",
-            "answer": "Brief answer..."
+            "question": "What is the last date to apply?",
+            "answer": "Detailed answer with context..."
+        }},
+        {{
+            "question": "What is the age limit for this recruitment?",
+            "answer": "Detailed answer with relaxations..."
         }}
+        // ... 10-12 total FAQs
     ]
 }}
 
-CRITICAL: NO freejobalert mentions, NO URLs!
+CRITICAL: 
+- Blog MUST be 1500-2000 words
+- NO freejobalert mentions
+- NO URLs
+- Be comprehensive and detailed
+- Focus on providing value to readers
 
 JSON OUTPUT:"""
 
-        result = self._call_gemma(prompt, images=None, for_blog=True, timeout=180)
+        result = self._call_gemma(prompt, images=None, for_blog=True, timeout=240)
         
         # 🛡️ AGGRESSIVE POST-GENERATION VALIDATION
         if result:
@@ -558,7 +585,7 @@ JSON OUTPUT:"""
                     "format": "json",
                     "options": {
                         "temperature": 0.7 if for_blog else 0.1,
-                        "num_predict": 2500 if for_blog else 2048,
+                        "num_predict": 4500 if for_blog else 2048,
                         "num_ctx": 32768,
                         "num_gpu": 99,
                         "num_thread": 8,
