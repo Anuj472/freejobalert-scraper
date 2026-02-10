@@ -1,4 +1,4 @@
-"""Gemma 3 12B Multimodal Processor - IMPROVED VERSION with 8-bit quantization."""
+"""Gemma 3 12B Multimodal Processor with AGGRESSIVE Content Validation."""
 
 import requests
 import json
@@ -29,7 +29,7 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 class GemmaProcessor:
-    """Process PDFs and generate blogs using Gemma 3 with 8-bit quantization."""
+    """Process PDFs and generate blogs using Gemma 3 with AGGRESSIVE validation."""
     
     def __init__(self):
         """Initialize Gemma 3 12B processor with optimized settings."""
@@ -41,12 +41,10 @@ class GemmaProcessor:
         if self._check_model_available():
             logger.info(f"✓ {self.model} initialized")
             logger.info(f"  - Vision: ✓")
-            logger.info(f"  - Quantization: 8-bit (faster inference)")
+            logger.info(f"  - Validation: SUPER ROBUST 🛡️")
             logger.info(f"  - Context: 32K tokens")
-            logger.info(f"  - VRAM: ~4-5 GB (optimized)")
         else:
             logger.warning(f"⚠️  {self.model} not found!")
-            logger.warning(f"   Run: ollama pull {self.model}")
     
     def _check_model_available(self) -> bool:
         """Check if Gemma 3 model is available."""
@@ -63,32 +61,223 @@ class GemmaProcessor:
         """Check if processor is available."""
         return self._check_model_available()
     
-    def _clean_freejobalert_links(self, text: str) -> str:
-        """Remove all FreeJobAlert links from text.
+    def _aggressive_freejobalert_check(self, text: str) -> bool:
+        """
+        AGGRESSIVE check for ANY freejobalert references.
+        Returns True if freejobalert found, False if clean.
+        """
+        if not text:
+            return False
         
-        This prevents FreeJobAlert URLs from appearing in generated blogs.
+        text_lower = text.lower()
+        
+        # Pattern 1: Direct domain mentions
+        if 'freejobalert.com' in text_lower:
+            return True
+        if 'freejobalert' in text_lower and '.com' in text_lower:
+            return True
+        
+        # Pattern 2: Text mentions
+        if 'freejobalert' in text_lower:
+            return True
+        if 'free job alert' in text_lower:
+            return True
+        
+        # Pattern 3: URL patterns with various protocols
+        fja_patterns = [
+            r'https?://(?:www\.)?freejobalert',
+            r'http://freejobalert',
+            r'https://freejobalert',
+            r'www\.freejobalert',
+            r'freejobalert\.com',
+            r'//freejobalert',
+        ]
+        
+        for pattern in fja_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        
+        return False
+    
+    def _remove_all_freejobalert_content(self, text: str) -> str:
+        """
+        AGGRESSIVELY remove ALL freejobalert references from text.
+        Multiple passes to ensure complete removal.
         """
         if not text:
             return text
         
-        # Remove all freejobalert.com URLs (http/https variants)
-        text = re.sub(r'https?://(?:www\.)?freejobalert\.com[^\s<>"]+', '[LINK REMOVED]', text)
+        original_text = text
         
-        # Remove markdown links containing freejobalert
-        text = re.sub(r'\[([^\]]+)\]\(https?://(?:www\.)?freejobalert\.com[^\)]+\)', r'\1', text)
+        # Pass 1: Remove URLs with various patterns
+        url_patterns = [
+            r'https?://(?:www\.)?freejobalert\.com[^\s\)\]<>"\']*',
+            r'http://freejobalert\.com[^\s\)\]<>"\']*',
+            r'www\.freejobalert\.com[^\s\)\]<>"\']*',
+            r'freejobalert\.com[^\s\)\]<>"\']*',
+            r'//freejobalert\.com[^\s\)\]<>"\']*',
+        ]
         
-        # Remove any remaining "freejobalert.com" text
-        text = re.sub(r'(?:www\.)?freejobalert\.com[^\s<>"]*', '[LINK REMOVED]', text, flags=re.IGNORECASE)
+        for pattern in url_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
         
-        # Clean up multiple spaces
-        text = re.sub(r'\s+', ' ', text)
+        # Pass 2: Remove markdown links containing freejobalert
+        text = re.sub(
+            r'\[([^\]]*)\]\(https?://(?:www\.)?freejobalert[^\)]*\)',
+            r'\1',
+            text,
+            flags=re.IGNORECASE
+        )
         
-        return text.strip()
+        # Pass 3: Remove "Source:" lines with freejobalert
+        text = re.sub(
+            r'(?:Source|Apply Link|PDF Link|Official Notification|Download|Visit)[\s:]*(?:\*\*)?(?:httpswww\.)?freejobalert[^\n]*\n?',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+        
+        # Pass 4: Remove entire sentences containing freejobalert
+        text = re.sub(
+            r'[^.!?\n]*(?:freejobalert|free job alert)[^.!?\n]*[.!?]',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+        
+        # Pass 5: Remove "Visit FreeJobAlert" type instructions
+        text = re.sub(
+            r'(?:Visit|Check|Download from|Apply through|Go to)[\s]+(?:the[\s]+)?(?:FreeJobAlert|Free Job Alert)[^.!?\n]*[.!?]?',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+        
+        # Pass 6: Remove remaining "freejobalert" text
+        text = re.sub(r'freejobalert', 'official source', text, flags=re.IGNORECASE)
+        text = re.sub(r'free[\s]?job[\s]?alert', 'official notification', text, flags=re.IGNORECASE)
+        
+        # Pass 7: Clean up formatting
+        text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+        text = re.sub(r' {2,}', ' ', text)  # Max 1 space
+        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)  # Clean empty lines
+        text = text.strip()
+        
+        # Log if we cleaned anything
+        if text != original_text:
+            logger.info("🧹 Removed freejobalert content from generated text")
+        
+        return text
+    
+    def _validate_and_clean_json_response(self, data: Dict) -> Optional[Dict]:
+        """
+        SUPER ROBUST validation of JSON response from Gemma.
+        
+        Returns:
+            - Cleaned dict if content is valid or can be cleaned
+            - None if content cannot be cleaned (too much freejobalert)
+        """
+        if not data:
+            return None
+        
+        cleaned_data = {}
+        fja_violations = 0
+        total_fields = 0
+        
+        for key, value in data.items():
+            total_fields += 1
+            
+            # Skip None values
+            if value is None:
+                continue
+            
+            # Check and clean string fields
+            if isinstance(value, str):
+                # Check if field contains freejobalert
+                has_fja = self._aggressive_freejobalert_check(value)
+                
+                if has_fja:
+                    fja_violations += 1
+                    logger.warning(f"⚠️  Field '{key}' contains freejobalert - attempting to clean")
+                    
+                    # Try to clean it
+                    cleaned_value = self._remove_all_freejobalert_content(value)
+                    
+                    # Double-check if it's actually clean now
+                    if self._aggressive_freejobalert_check(cleaned_value):
+                        logger.error(f"❌ Field '{key}' still has freejobalert after cleaning - rejecting")
+                        # Don't include this field
+                        continue
+                    else:
+                        # Successfully cleaned
+                        if cleaned_value and len(cleaned_value) > 10:  # Must have meaningful content
+                            cleaned_data[key] = cleaned_value
+                            logger.info(f"✅ Field '{key}' cleaned successfully")
+                        else:
+                            logger.warning(f"⚠️  Field '{key}' empty after cleaning - skipping")
+                else:
+                    # Field is clean
+                    cleaned_data[key] = value
+            
+            # Handle dict fields (like important_dates, vacancy_details)
+            elif isinstance(value, dict):
+                cleaned_dict = {}
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, str):
+                        if not self._aggressive_freejobalert_check(sub_value):
+                            cleaned_dict[sub_key] = sub_value
+                        else:
+                            logger.warning(f"⚠️  Subfield '{key}.{sub_key}' contains freejobalert - removed")
+                    else:
+                        cleaned_dict[sub_key] = sub_value
+                
+                if cleaned_dict:
+                    cleaned_data[key] = cleaned_dict
+            
+            # Handle list fields (like highlights, faqs)
+            elif isinstance(value, list):
+                cleaned_list = []
+                for item in value:
+                    if isinstance(item, str):
+                        if not self._aggressive_freejobalert_check(item):
+                            cleaned_list.append(item)
+                        else:
+                            logger.warning(f"⚠️  List item in '{key}' contains freejobalert - removed")
+                    elif isinstance(item, dict):
+                        # Handle FAQ objects
+                        cleaned_item = {}
+                        for item_key, item_value in item.items():
+                            if isinstance(item_value, str):
+                                if not self._aggressive_freejobalert_check(item_value):
+                                    cleaned_item[item_key] = item_value
+                        if cleaned_item:
+                            cleaned_list.append(cleaned_item)
+                    else:
+                        cleaned_list.append(item)
+                
+                if cleaned_list:
+                    cleaned_data[key] = cleaned_list
+            
+            else:
+                # Non-string fields (numbers, bools) - pass through
+                cleaned_data[key] = value
+        
+        # Final decision: reject if too many violations
+        if fja_violations > 3:
+            logger.error(f"🚨 REJECTED: Too many freejobalert violations ({fja_violations} fields)")
+            logger.error("   This content cannot be used - returning None")
+            return None
+        
+        if fja_violations > 0:
+            logger.warning(f"⚠️  Cleaned {fja_violations} fields with freejobalert references")
+        else:
+            logger.info("✅ No freejobalert references found in generated content")
+        
+        return cleaned_data if cleaned_data else None
     
     def process_pdf_url(self, pdf_url: str) -> Optional[Dict]:
         """
-        Download and process PDF using Gemma 3.
-        IMPROVED: Focused prompts, no URL extraction.
+        Download and process PDF using Gemma 3 with validation.
         """
         if not self.is_available():
             logger.warning("Gemma 3 not available, skipping PDF processing")
@@ -97,7 +286,6 @@ class GemmaProcessor:
         try:
             logger.info(f"📥 Downloading PDF: {pdf_url[:60]}...")
             
-            # Download PDF with INCREASED timeout (90 seconds for slow servers)
             response = requests.get(pdf_url, timeout=90, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
@@ -105,7 +293,7 @@ class GemmaProcessor:
             
             pdf_bytes = BytesIO(response.content)
             
-            # Try text extraction first (fast path)
+            # Try text extraction first
             if PYPDF2_AVAILABLE:
                 text_data = self._try_text_extraction(pdf_bytes)
                 if text_data and len(text_data) > 500:
@@ -121,14 +309,7 @@ class GemmaProcessor:
                 with open(temp_pdf, 'wb') as f:
                     f.write(pdf_bytes.read())
                 
-                images = convert_from_path(
-                    temp_pdf,
-                    dpi=200,
-                    fmt='jpeg',
-                    first_page=1,
-                    last_page=3
-                )
-                
+                images = convert_from_path(temp_pdf, dpi=200, fmt='jpeg', first_page=1, last_page=3)
                 logger.info(f"✓ Converted {len(images)} pages to images")
                 
                 result = self._extract_from_images_focused(images)
@@ -136,12 +317,9 @@ class GemmaProcessor:
                 
                 return result
             else:
-                logger.warning("pdf2image not available, cannot process image PDFs")
+                logger.warning("pdf2image not available")
                 return None
                 
-        except requests.exceptions.Timeout:
-            logger.error(f"PDF download timeout after 90 seconds: {pdf_url[:60]}")
-            return None
         except Exception as e:
             logger.error(f"Error processing PDF: {e}")
             return None
@@ -158,156 +336,66 @@ class GemmaProcessor:
             return None
     
     def _extract_from_text_focused(self, text: str) -> Optional[Dict]:
-        """
-        IMPROVED: Extract with focused, specific questions.
-        NO URL extraction - HTML parser will handle that.
-        DO NOT extract post_date - HTML parser will handle that.
-        """
-        
-        # Truncate text to fit context (32K tokens)
-        text = text[:40000]  # Reduced from 50K
+        """Extract from text with focused prompts."""
+        text = text[:40000]
         
         prompt = f"""You are analyzing a government job recruitment notification document.
+
+CRITICAL RULES - READ CAREFULLY:
+1. NEVER mention "freejobalert" or "freejobalert.com" ANYWHERE in your response
+2. DO NOT extract or include ANY URLs, links, or web addresses
+3. DO NOT extract post_date (notification publish date)
+4. Only extract last_date (application deadline)
+5. Return ONLY valid JSON format
 
 DOCUMENT TEXT:
 {text}
 
-Answer these SPECIFIC questions by carefully reading the document. Return ONLY valid JSON.
+Extract the following information:
 
-CRITICAL RULES:
-1. DO NOT extract or include ANY URLs, links, or web addresses
-2. DO NOT extract post_date (notification publish date) - only extract last_date (application deadline)
-3. Vacancies MUST be INTEGER count (e.g., 100, 50, 25) NOT year (2026)
-4. Dates in DD-MM-YYYY format only
-5. Use null for fields not found in document
-6. Be precise and extract EXACT values from document
+1. Job title or post name?
+2. Organization/department name?
+3. Category (banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt)?
+4. Total vacancies (INTEGER count)?
+5. Advertisement/notification number?
+6. LAST DATE to apply (DD-MM-YYYY)?
+7. Salary or pay scale?
+8. Age limit?
+9. Educational qualification?
+10. Job location or posting place?
+11. Application fee?
+12. Selection process?
+13. How to apply (steps)?
+14. Important dates?
+15. Post-wise vacancy breakdown?
 
-Questions to answer:
-
-1. What is the EXACT job title or post name?
-   Example: "Assistant Engineer", "Staff Nurse", "Clerk Grade II"
-
-2. What is the EXACT organization/department/commission name?
-   Example: "Indian Railways", "State Bank of India", "UPSC"
-
-3. **IMPORTANT: What CATEGORY does this job belong to?**
-   Based on the organization type, choose the MOST APPROPRIATE category:
-   
-   - "banking" - If organization is: SBI, IBPS, RBI, Bank of India, Canara Bank, PNB, any bank
-   - "defence" - If organization is: Indian Army, Navy, Air Force, DRDO, OTA, NDA, Coast Guard
-   - "railway" - If organization is: Indian Railways, RRB, Railway Recruitment Board, IRCTC
-   - "ssc" - If organization is: Staff Selection Commission, SSC
-   - "upsc" - If organization is: Union Public Service Commission, UPSC
-   - "police" - If organization is: Police Department, State Police, Central Police
-   - "teaching" - If organization is: University, School, Education Department, UGC, NCERT
-   - "psu" - If organization is: NTPC, ONGC, SAIL, BHEL, Coal India, any PSU
-   - "state-govt" - If organization is: State Government Department (not railway/police)
-   - "central-govt" - If organization is: Central Government Department (not SSC/UPSC/Railway)
-   - "admit-card" - If document is about admit card
-   - "result" - If document is about result/answer key
-   - "answer-key" - If document is about answer key
-   
-   Examples:
-   - "Union Public Service Commission" → category: "upsc"
-   - "State Bank of India" → category: "banking"
-   - "Indian Railways" → category: "railway"
-   - "Indian Army" → category: "defence"
-   - "Staff Selection Commission" → category: "ssc"
-
-4. How many TOTAL vacancies are there? (INTEGER count, NOT year)
-   Look for: "Total Posts", "Total Vacancies", numbers in tables
-   Example: 150 (not 2026)
-
-5. What is the advertisement/notification number?
-   Example: "Advt. No. 01/2026", "Notification No. 12345"
-
-6. What is the LAST DATE to apply? (Application deadline, NOT notification date)
-   Look for: "Last Date", "Closing Date", "Apply By"
-   Format: DD-MM-YYYY
-   Example: "15-02-2026"
-
-7. What is the salary or pay scale mentioned?
-   Example: "Rs. 25,000 - 50,000", "Level 7, Rs. 44,900"
-
-8. What is the age limit for applicants?
-   Example: "21-30 years", "18-35 years as on 01-01-2026"
-
-9. What educational qualification is required?
-   Example: "Bachelor's Degree in Engineering", "10th Pass", "Graduate"
-
-10. **IMPORTANT: What is the job location or posting place?**
-    Look carefully for: "Place of Posting", "Location", "Work Location", "Job Station"
-    - Check if it mentions specific cities: Delhi, Mumbai, Bangalore, etc.
-    - Check if it mentions states: Maharashtra, Karnataka, UP, etc.
-    - Check if it mentions regions: North India, South India, All India
-    - Look in vacancy tables for location columns
-    Example: "New Delhi", "Mumbai, Maharashtra", "All India", "Various locations across India"
-
-11. What is the application fee for different categories?
-     Example: {{"General/OBC": "Rs. 500", "SC/ST/PH": "Rs. 250", "Women": "Rs. 250"}}
-
-12. What is the selection process or exam pattern?
-     Example: "Written Exam + Interview", "CBT + Physical Test"
-
-13. How should candidates apply? (Step-by-step instructions from document)
-     Example: "Apply online through official website"
-
-14. Important dates mentioned?
-     - Application start date? (DD-MM-YYYY)
-     - Application end date / Last date? (DD-MM-YYYY)
-     - Exam date if mentioned? (DD-MM-YYYY)
-
-15. Is there a post-wise vacancy breakdown in tables?
-     Example: {{"Engineer": "50", "Assistant": "100"}}
-
-Return ONLY this JSON structure:
+Return ONLY this JSON:
 {{
-    "title": "Exact job title from document",
-    "organization": "Exact organization name",
-    "category": "banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt",
-    "vacancies": 120,
-    "advt_no": "Advertisement number",
+    "title": "Job title",
+    "organization": "Organization name",
+    "category": "category",
+    "vacancies": 100,
+    "advt_no": "Advt No",
     "last_date": "DD-MM-YYYY",
-    "salary": "Pay scale details",
+    "salary": "Pay scale",
     "age_limit": "Age requirement",
-    "qualification": "Educational qualification",
-    "location": "Job location with city/state",
-    "application_fee": {{"General": "Rs. X", "SC/ST": "Nil"}},
-    "selection_process": "Exam/selection method",
-    "how_to_apply": "Application instructions",
-    "important_dates": {{
-        "Application Start": "DD-MM-YYYY or null",
-        "Application End": "DD-MM-YYYY",
-        "Exam Date": "DD-MM-YYYY or null"
-    }},
-    "vacancy_details": {{
-        "Post Name 1": "Count",
-        "Post Name 2": "Count"
-    }}
+    "qualification": "Education required",
+    "location": "Job location",
+    "application_fee": {{"General": "Rs. X"}},
+    "selection_process": "Selection method",
+    "how_to_apply": "Application steps",
+    "important_dates": {{"Application End": "DD-MM-YYYY"}},
+    "vacancy_details": {{"Post": "Count"}}
 }}
 
-REMEMBER:
-- NO URLs or links
-- NO post_date field
-- Category = Based on organization type (banking/defence/railway/ssc/upsc/etc.)
-- Vacancies = INTEGER count
-- Location = MUST extract carefully
-- last_date = Application deadline only
-- Dates = DD-MM-YYYY
-- null if not found
+REMEMBER: NO URLs, NO freejobalert mentions, NO post_date field!
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=None, timeout=90)  # Reduced from 120s
+        return self._call_gemma(prompt, images=None, timeout=90)
     
     def _extract_from_images_focused(self, images: List) -> Optional[Dict]:
-        """
-        IMPROVED: Extract from images with focused questions.
-        NO URL extraction.
-        NO post_date extraction.
-        """
-        
-        # Convert images to base64
+        """Extract from images with focused questions."""
         images_base64 = []
         for img in images:
             buffered = BytesIO()
@@ -317,173 +405,105 @@ JSON OUTPUT:"""
         
         prompt = """You are analyzing scanned images of a government job notification document.
 
-Answer these SPECIFIC questions by carefully reading all images. Return ONLY valid JSON.
+CRITICAL RULES - READ CAREFULLY:
+1. NEVER mention "freejobalert" or "freejobalert.com" in your response
+2. DO NOT extract or include ANY URLs or links
+3. DO NOT extract post_date (only last_date for application deadline)
+4. Return ONLY valid JSON
 
-CRITICAL RULES:
-1. DO NOT extract or include ANY URLs, links, or web addresses
-2. DO NOT extract post_date (notification date) - only last_date (application deadline)
-3. Read tables carefully - vacancies = INTEGER count (e.g., 50, 100) NOT year (2026)
-4. Dates in DD-MM-YYYY format
-5. Use null for fields you cannot find
-6. Extract EXACT text you see
+Answer these questions from the images:
 
-Questions:
-
-1. What is the EXACT job title/post name shown?
-
-2. What is the EXACT organization/department name?
-
-3. **CRITICAL: What CATEGORY does this job belong to?**
-   Look at the organization name/logo and determine the category:
-   
-   - "banking" - Banks: SBI, IBPS, RBI, PNB, Bank of India, etc.
-   - "defence" - Armed Forces: Army, Navy, Air Force, DRDO, NDA, etc.
-   - "railway" - Indian Railways, RRB, Railway Recruitment Board
-   - "ssc" - Staff Selection Commission
-   - "upsc" - Union Public Service Commission
-   - "police" - Police Department, State/Central Police
-   - "teaching" - Universities, Schools, Education Dept
-   - "psu" - PSUs: NTPC, ONGC, SAIL, BHEL, etc.
-   - "state-govt" - State Government Departments
-   - "central-govt" - Central Government Departments
-   - "admit-card" - If this is an admit card document
-   - "result" - If this is a result document
-   
-   Choose the MOST APPROPRIATE category based on what you see.
-
-4. How many TOTAL vacancies? (Look in tables, INTEGER count only, NOT year)
-
-5. What is the notification/advertisement number?
-
-6. What is the LAST DATE to apply? (Application deadline, NOT notification date)
-   Format: DD-MM-YYYY
-
-7. Salary or pay scale?
-
-8. Age limit for applicants?
-
-9. Educational qualification required?
-
-10. **CRITICAL: What is the job LOCATION?**
-    Look for: Place of Posting, Location, Work Station
-    Extract city/state/region mentioned
-
-11. Application fee by category?
-
-12. Selection process or exam pattern?
-
-13. How to apply? (Steps visible)
-
-14. Important dates:
-     - Application start? (DD-MM-YYYY)
-     - Last date? (DD-MM-YYYY)
-     - Exam date? (DD-MM-YYYY)
-
-15. Post-wise vacancy breakdown?
+1. Job title?
+2. Organization name?
+3. Category (banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt)?
+4. Total vacancies (INTEGER)?
+5. Notification number?
+6. LAST DATE to apply (DD-MM-YYYY)?
+7. Salary/pay scale?
+8. Age limit?
+9. Qualification required?
+10. Job location?
+11. Application fee?
+12. Selection process?
+13. How to apply?
+14. Important dates?
+15. Vacancy breakdown?
 
 Return ONLY this JSON:
 {
-    "title": "Exact job title",
-    "organization": "Exact organization name",
-    "category": "banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt",
+    "title": "Job title",
+    "organization": "Organization",
+    "category": "category",
     "vacancies": 100,
-    "advt_no": "Notification number",
+    "advt_no": "Advt No",
     "last_date": "DD-MM-YYYY",
     "salary": "Pay scale",
-    "age_limit": "Age requirement",
-    "qualification": "Education required",
-    "location": "Job location/posting place",
-    "application_fee": {"General": "Rs. X", "SC/ST": "Nil"},
-    "selection_process": "Selection method",
-    "how_to_apply": "Application steps",
-    "important_dates": {
-        "Application Start": "DD-MM-YYYY or null",
-        "Application End": "DD-MM-YYYY",
-        "Exam Date": "DD-MM-YYYY or null"
-    },
-    "vacancy_details": {
-        "Post 1": "Count",
-        "Post 2": "Count"
-    }
+    "age_limit": "Age",
+    "qualification": "Education",
+    "location": "Location",
+    "application_fee": {"General": "Rs. X"},
+    "selection_process": "Method",
+    "how_to_apply": "Steps",
+    "important_dates": {"Application End": "DD-MM-YYYY"},
+    "vacancy_details": {"Post": "Count"}
 }
 
-REMEMBER:
-- NO URLs
-- NO post_date
-- Category = Based on organization (banking/defence/railway/etc.)
-- Vacancies = INTEGER count
-- Location = MUST extract
-- last_date = Application deadline
-- Dates = DD-MM-YYYY
-- null if not visible
+REMEMBER: NO URLs, NO freejobalert, NO post_date!
 
 JSON OUTPUT:"""
 
-        return self._call_gemma(prompt, images=images_base64, timeout=90)  # Reduced from 120s
+        return self._call_gemma(prompt, images=images_base64, timeout=90)
     
     def generate_blog(self, job_data: Dict) -> Optional[Dict]:
         """
-        IMPROVED: Generate concise SEO blog UNDER 1000 words.
-        CRITICAL: Clean FreeJobAlert links from all text fields before generating blog.
+        Generate blog with AGGRESSIVE validation.
         """
-        
         if not self.is_available():
             logger.warning("Gemma 3 not available, skipping blog generation")
             return None
         
-        # CRITICAL: Clean FreeJobAlert links from all text fields
-        cleaned_data = {}
+        # Clean input data first
+        cleaned_input = {}
         for key, value in job_data.items():
-            if value is None:
-                continue
-            
-            # Clean text fields
-            if isinstance(value, str):
-                cleaned_value = self._clean_freejobalert_links(value)
-                if cleaned_value:  # Only include if not empty after cleaning
-                    cleaned_data[key] = cleaned_value
+            if value and isinstance(value, str):
+                cleaned_input[key] = self._remove_all_freejobalert_content(value)
             else:
-                cleaned_data[key] = value
-        
-        # Log if we cleaned any links
-        original_count = sum(1 for v in job_data.values() if v and isinstance(v, str) and 'freejobalert' in v.lower())
-        if original_count > 0:
-            logger.info(f"🧹 Cleaned FreeJobAlert links from {original_count} fields before blog generation")
+                cleaned_input[key] = value
         
         prompt = f"""Create a CONCISE, SEO-optimized blog post for this job recruitment.
 
+CRITICAL RULES - FOLLOW STRICTLY:
+1. NEVER mention "freejobalert" or "freejobalert.com" anywhere
+2. DO NOT include ANY URLs or web links in the blog
+3. Focus on official information only
+4. Use phrases like "official notification" or "official website" instead of website names
+
 JOB DATA:
-{json.dumps(cleaned_data, indent=2)}
+{json.dumps(cleaned_input, indent=2)}
 
 REQUIREMENTS:
-1. WORD LIMIT: Maximum 800-900 words (be concise!)
+1. Word Limit: 800-900 words maximum
 2. SEO Title: 60-70 characters
 3. Meta Description: 150-160 characters
 4. Blog Structure:
    - Brief Overview (2-3 sentences)
    - 🎯 Key Highlights (5 bullet points with emojis)
    - 📅 Important Dates (markdown table)
-   - 📋 Eligibility (qualification, age limit)
-   - 💰 Salary & Fee Details
+   - 📋 Eligibility
+   - 💰 Salary & Fee
    - 📝 How to Apply (4-5 steps)
    - ❓ FAQs (5 questions)
 
-5. IMPORTANT:
-   - Use markdown headings (##, ###)
-   - Add emojis for engagement
-   - Keep language simple and clear
-   - Focus on KEY information only
-   - NO fluff or repetition
-   - Be helpful and direct
-   - DO NOT include any URLs or web links in the blog
-
-6. Provide 5 one-liner highlights and 5 FAQs
+5. Use markdown headings (##, ###)
+6. Add emojis for engagement
+7. Be concise and clear
+8. NO URLs or links
 
 Return ONLY valid JSON:
 {{
     "seo_title": "Job Title 2026 - X Posts | Last Date",
     "meta_description": "Complete details about...",
-    "article": "Full markdown blog (800-900 words MAX)...",
+    "article": "Full markdown blog (800-900 words)...",
     "highlights": [
         "Total Posts: X",
         "Last Date: DD-MM-YYYY",
@@ -495,56 +515,36 @@ Return ONLY valid JSON:
         {{
             "question": "What is the last date?",
             "answer": "Brief answer..."
-        }},
-        {{
-            "question": "How many posts?",
-            "answer": "Brief answer..."
-        }},
-        {{
-            "question": "What is the qualification?",
-            "answer": "Brief answer..."
-        }},
-        {{
-            "question": "What is the salary?",
-            "answer": "Brief answer..."
-        }},
-        {{
-            "question": "How to apply?",
-            "answer": "Brief answer..."
         }}
     ]
 }}
 
-CRITICAL:
-- Blog article MUST be under 1000 words
-- Be concise and to-the-point
-- Focus on IMPORTANT details only
-- Use tables for dates/fees
-- NO URLs or web links
+CRITICAL: NO freejobalert mentions, NO URLs!
 
 JSON OUTPUT:"""
 
-        result = self._call_gemma(prompt, images=None, for_blog=True, timeout=180)  # Reduced from 300s
+        result = self._call_gemma(prompt, images=None, for_blog=True, timeout=180)
         
-        # Double-check: Clean any remaining FreeJobAlert links from generated blog
-        if result and result.get('article'):
-            original_article = result['article']
-            cleaned_article = self._clean_freejobalert_links(original_article)
-            if cleaned_article != original_article:
-                logger.warning("⚠️  Gemma included FreeJobAlert links in blog - cleaned them")
-                result['article'] = cleaned_article
+        # 🛡️ AGGRESSIVE POST-GENERATION VALIDATION
+        if result:
+            logger.info("🛡️ Running AGGRESSIVE post-generation validation...")
+            validated_result = self._validate_and_clean_json_response(result)
+            
+            if not validated_result:
+                logger.error("🚨 BLOG REJECTED: Contains too much freejobalert content")
+                logger.error("   Returning None - blog will not be used")
+                return None
+            
+            logger.info("✅ Blog passed validation and cleaning")
+            return validated_result
         
-        return result
+        return None
     
     def _call_gemma(self, prompt: str, images: Optional[List[str]] = None, 
                     for_blog: bool = False, timeout: int = 90) -> Optional[Dict]:
-        """Call Gemma 3 12B model with 8-bit quantization optimizations."""
-        
+        """Call Gemma 3 model."""
         try:
-            messages = [{
-                "role": "user",
-                "content": prompt
-            }]
+            messages = [{"role": "user", "content": prompt}]
             
             if images:
                 messages[0]["images"] = images
@@ -557,13 +557,13 @@ JSON OUTPUT:"""
                     "stream": False,
                     "format": "json",
                     "options": {
-                        "temperature": 0.7 if for_blog else 0.1,  # Lower temp for extraction
-                        "num_predict": 2500 if for_blog else 2048,  # Token limit
-                        "num_ctx": 32768,  # Reduced from 128K for speed (32K is enough)
-                        "num_gpu": 99,  # Force GPU usage
-                        "num_thread": 8,  # CPU threads for CPU layers
-                        "f16_kv": True,  # Use FP16 for key/value cache (faster)
-                        "low_vram": False,  # We want speed, not VRAM savings
+                        "temperature": 0.7 if for_blog else 0.1,
+                        "num_predict": 2500 if for_blog else 2048,
+                        "num_ctx": 32768,
+                        "num_gpu": 99,
+                        "num_thread": 8,
+                        "f16_kv": True,
+                        "low_vram": False,
                     }
                 },
                 timeout=timeout
@@ -591,7 +591,6 @@ JSON OUTPUT:"""
                 
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            logger.debug(f"Response: {content[:200] if 'content' in locals() else 'N/A'}")
             return None
         except Exception as e:
             logger.error(f"Gemma 3 call failed: {e}")
