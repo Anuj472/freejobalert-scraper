@@ -186,6 +186,7 @@ class SmartJobProcessor:
             links = {
                 'pdf_url': None,
                 'official_website': None,
+                'application_url': None,
             }
             
             all_links = soup.find_all('a', href=True)
@@ -203,14 +204,21 @@ class SmartJobProcessor:
                 
                 # CRITICAL: Skip FreeJobAlert links
                 if self._is_freejobalert_link(href):
-                    logger.info(f"🚫 BLOCKED FreeJobAlert link from {text[:50]}...")
                     continue
                 
-                # Identify link type - ONLY pdf_url and official_website
+                # Identify link type
                 if '.pdf' in href.lower() and not links['pdf_url']:
                     links['pdf_url'] = href
+                
                 elif any(word in text for word in ['official website', 'official site', 'website']) and not links['official_website']:
                     links['official_website'] = href
+                
+                elif any(word in text for word in ['apply online', 'online application', 'register', 'login', 'apply here']) and not links['application_url']:
+                    links['application_url'] = href
+            
+            # Map application_url to job_url for compatibility if needed
+            if links['application_url']:
+                links['job_url'] = links['application_url']
             
             return links
             
@@ -389,23 +397,39 @@ CATEGORY:"""
                     logger.info(f"   ✓ Location: {structured_data['location']}")
                 if structured_data.get('vacancies'):
                     logger.info(f"   ✓ Vacancies: {structured_data['vacancies']}")
+                if structured_data.get('full_description'):
+                    logger.info("   ✓ Full Description extracted")
+                if structured_data.get('official_website'):
+                    logger.info(f"   ✓ Official Website (Gemma): {structured_data['official_website'][:50]}...")
                 
                 # STEP 3: Extract ONLY links + dates from HTML
                 logger.info("")
                 logger.info("STEP 3: Extracting ONLY links + dates from HTML...")
-                logger.info("(NOT parsing content - already have it from PDF)")
+                logger.info("(Merging with AI data - preferring HTML for URLs if accurate)")
                 
                 html_links = self._extract_links_only_from_html(html, details_url)
+                
+                # Merge checks
                 for field, value in html_links.items():
-                    if value and not structured_data.get(field):
-                        structured_data[field] = value
-                        logger.info(f"   + {field}: {value[:60]}...")
+                    if value:
+                        # For URLs, HTML is often more accurate/clickable than OCR text
+                        # But user wants Gemma to populate all.
+                        # Hybrid approach: Use HTML if Gemma is missing OR if Gemma text looks invalid
+                        if not structured_data.get(field):
+                             structured_data[field] = value
+                             logger.info(f"   + {field}: {value[:60]}... (from HTML)")
+                        elif 'http' not in structured_data[field]:
+                             # Gemma returned non-URL text, overwrite with valid HTML link
+                             structured_data[field] = value
+                             logger.info(f"   + {field}: {value[:60]}... (corrected Gemma non-URL)")
                 
                 # Extract dates
                 post_date = self._extract_post_date_from_html(html)
                 if post_date:
-                    structured_data['post_date'] = post_date
-                    logger.info(f"   + post_date: {post_date}")
+                    structured_data['post_date'] = post_date # HTML date is usually "web post date", more relevant for sorting
+                    logger.info(f"   + post_date: {post_date} (from HTML)")
+                elif structured_data.get('post_date'):
+                     logger.info(f"   + post_date: {structured_data['post_date']} (from Gemma)")
                 
                 if not structured_data.get('last_date'):
                     last_date = self._extract_last_date_from_html(html)

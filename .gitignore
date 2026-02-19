@@ -52,6 +52,7 @@ logs/
 # Downloaded PDFs
 pdfs/
 downloads/
+temp_pdfs/
 
 # Jupyter Notebook
 .ipynb_checkpoints

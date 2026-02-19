@@ -109,7 +109,7 @@ class GemmaProcessor:
         
         original_text = text
         
-        # Pass 1: Remove URLs with various patterns
+        # Pass 1: Remove URLs with various patterns - SPECIFICALLY FreeJobAlert
         url_patterns = [
             r'https?://(?:www\.)?freejobalert\.com[^\s\)\]<>"\']*',
             r'http://freejobalert\.com[^\s\)\]<>"\']*',
@@ -184,6 +184,9 @@ class GemmaProcessor:
         fja_violations = 0
         total_fields = 0
         
+        # Attributes allowed to be URLs
+        url_fields = ['official_website', 'application_url', 'pdf_url', 'job_url']
+        
         for key, value in data.items():
             total_fields += 1
             
@@ -216,8 +219,15 @@ class GemmaProcessor:
                         else:
                             logger.warning(f"⚠️  Field '{key}' empty after cleaning - skipping")
                 else:
-                    # Field is clean
-                    cleaned_data[key] = value
+                    # Field is clean - but validate URLs if it's a URL field
+                    if key in url_fields:
+                        if value.lower().startswith('http') or 'www.' in value.lower():
+                            cleaned_data[key] = value
+                        else:
+                            # Not a valid URL, maybe text describing a URL? Keep it but warn
+                           cleaned_data[key] = value
+                    else:
+                        cleaned_data[key] = value
             
             # Handle dict fields (like important_dates, vacancy_details)
             elif isinstance(value, dict):
@@ -340,58 +350,65 @@ class GemmaProcessor:
         text = text[:40000]
         
         prompt = f"""You are analyzing a government job recruitment notification document.
-
-CRITICAL RULES - READ CAREFULLY:
-1. NEVER mention "freejobalert" or "freejobalert.com" ANYWHERE in your response
-2. DO NOT extract or include ANY URLs, links, or web addresses
-3. DO NOT extract post_date (notification publish date)
-4. Only extract last_date (application deadline)
-5. Return ONLY valid JSON format
-
-DOCUMENT TEXT:
-{text}
-
-Extract the following information:
-
-1. Job title or post name?
-2. Organization/department name?
-3. Category (banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt)?
-4. Total vacancies (INTEGER count)?
-5. Advertisement/notification number?
-6. LAST DATE to apply (DD-MM-YYYY)?
-7. Salary or pay scale?
-8. Age limit?
-9. Educational qualification?
-10. Job location or posting place?
-11. Application fee?
-12. Selection process?
-13. How to apply (steps)?
-14. Important dates?
-15. Post-wise vacancy breakdown?
-
-Return ONLY this JSON:
-{{
-    "title": "Job title",
-    "organization": "Organization name",
-    "category": "category",
-    "vacancies": 100,
-    "advt_no": "Advt No",
-    "last_date": "DD-MM-YYYY",
-    "salary": "Pay scale",
-    "age_limit": "Age requirement",
-    "qualification": "Education required",
-    "location": "Job location",
-    "application_fee": {{"General": "Rs. X"}},
-    "selection_process": "Selection method",
-    "how_to_apply": "Application steps",
-    "important_dates": {{"Application End": "DD-MM-YYYY"}},
-    "vacancy_details": {{"Post": "Count"}}
-}}
-
-REMEMBER: NO URLs, NO freejobalert mentions, NO post_date field!
-
-JSON OUTPUT:"""
-
+        
+        CRITICAL RULES - READ CAREFULLY:
+        1. NEVER mention "freejobalert" or "freejobalert.com" ANYWHERE in your response
+        2. Extract OFFICIAL URLs only (Official Website, Application Link).
+        3. DO NOT extract unofficial or generated links.
+        4. Return ONLY valid JSON format
+        
+        DOCUMENT TEXT:
+        {text}
+        
+        Extract the following information:
+        
+        1. Job title or post name?
+        2. Organization/department name?
+        3. Category (banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt)?
+        4. Total vacancies (INTEGER count)?
+        5. Advertisement/notification number?
+        6. Notification Date (when was it published)?
+        7. LAST DATE to apply (DD-MM-YYYY)?
+        8. Salary or pay scale?
+        9. Age limit?
+        10. Educational qualification?
+        11. Job location or posting place?
+        12. Application fee?
+        13. Selection process?
+        14. How to apply (detailed steps)?
+        15. Official Website URL?
+        16. Application URL (Apply Online link)?
+        17. Important dates?
+        18. Post-wise vacancy breakdown?
+        19. Full Description / Summary of the job?
+        
+        Return ONLY this JSON:
+        {{
+            "title": "Job title",
+            "organization": "Organization name",
+            "category": "category",
+            "vacancies": 100,
+            "advt_no": "Advt No",
+            "post_date": "DD-MM-YYYY (Notification Date)",
+            "last_date": "DD-MM-YYYY",
+            "salary": "Pay scale",
+            "age_limit": "Age requirement",
+            "qualification": "Education required",
+            "location": "Job location",
+            "application_fee": "Fee details",
+            "selection_process": "Selection method",
+            "how_to_apply": "Application steps",
+            "official_website": "https://...",
+            "application_url": "https://...",
+            "full_description": "Comprehensive summary of the job notification...",
+            "important_dates": {{"Application Start": "DD-MM-YYYY", "Application End": "DD-MM-YYYY"}},
+            "vacancy_details": {{"Post Name": "Count"}}
+        }}
+        
+        REMEMBER: NO freejobalert mentions! Extract VALID official URLs.
+        
+        JSON OUTPUT:"""
+        
         return self._call_gemma(prompt, images=None, timeout=90)
     
     def _extract_from_images_focused(self, images: List) -> Optional[Dict]:
@@ -404,54 +421,61 @@ JSON OUTPUT:"""
             images_base64.append(img_base64)
         
         prompt = """You are analyzing scanned images of a government job notification document.
-
-CRITICAL RULES - READ CAREFULLY:
-1. NEVER mention "freejobalert" or "freejobalert.com" in your response
-2. DO NOT extract or include ANY URLs or links
-3. DO NOT extract post_date (only last_date for application deadline)
-4. Return ONLY valid JSON
-
-Answer these questions from the images:
-
-1. Job title?
-2. Organization name?
-3. Category (banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt)?
-4. Total vacancies (INTEGER)?
-5. Notification number?
-6. LAST DATE to apply (DD-MM-YYYY)?
-7. Salary/pay scale?
-8. Age limit?
-9. Qualification required?
-10. Job location?
-11. Application fee?
-12. Selection process?
-13. How to apply?
-14. Important dates?
-15. Vacancy breakdown?
-
-Return ONLY this JSON:
-{
-    "title": "Job title",
-    "organization": "Organization",
-    "category": "category",
-    "vacancies": 100,
-    "advt_no": "Advt No",
-    "last_date": "DD-MM-YYYY",
-    "salary": "Pay scale",
-    "age_limit": "Age",
-    "qualification": "Education",
-    "location": "Location",
-    "application_fee": {"General": "Rs. X"},
-    "selection_process": "Method",
-    "how_to_apply": "Steps",
-    "important_dates": {"Application End": "DD-MM-YYYY"},
-    "vacancy_details": {"Post": "Count"}
-}
-
-REMEMBER: NO URLs, NO freejobalert, NO post_date!
-
-JSON OUTPUT:"""
-
+        
+        CRITICAL RULES - READ CAREFULLY:
+        1. NEVER mention "freejobalert" or "freejobalert.com" in your response
+        2. Extract OFFICIAL URLs only.
+        3. Return ONLY valid JSON
+        
+        Answer these questions from the images:
+        
+        1. Job title?
+        2. Organization name?
+        3. Category (banking/defence/railway/ssc/upsc/police/teaching/psu/state-govt/central-govt)?
+        4. Total vacancies (INTEGER)?
+        5. Notification number?
+        6. Notification Date (published date)?
+        7. LAST DATE to apply (DD-MM-YYYY)?
+        8. Salary/pay scale?
+        9. Age limit?
+        10. Qualification required?
+        11. Job location?
+        12. Application fee?
+        13. Selection process?
+        14. How to apply?
+        15. Official Website URL?
+        16. Application URL?
+        17. Important dates?
+        18. Vacancy breakdown?
+        19. Full Description / Summary?
+        
+        Return ONLY this JSON:
+        {
+            "title": "Job title",
+            "organization": "Organization",
+            "category": "category",
+            "vacancies": 100,
+            "advt_no": "Advt No",
+            "post_date": "DD-MM-YYYY",
+            "last_date": "DD-MM-YYYY",
+            "salary": "Pay scale",
+            "age_limit": "Age",
+            "qualification": "Education",
+            "location": "Location",
+            "application_fee": "Fee details",
+            "selection_process": "Method",
+            "how_to_apply": "Steps",
+            "official_website": "https://...",
+            "application_url": "https://...",
+            "full_description": "Summary...",
+            "important_dates": {"Application End": "DD-MM-YYYY"},
+            "vacancy_details": {"Post": "Count"}
+        }
+        
+        REMEMBER: NO freejobalert mentions!
+        
+        JSON OUTPUT:"""
+        
         return self._call_gemma(prompt, images=images_base64, timeout=90)
     
     def generate_blog(self, job_data: Dict) -> Optional[Dict]:

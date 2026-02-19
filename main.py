@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from config import Config
 from scraper import FreeJobAlertScraper
 from supabase_client import SupabaseClient
-from gdrive_upload import GoogleDriveUploader
+from gdrive_uploader import GoogleDriveUploader
 
 # Configure logging with UTF-8 encoding for Windows
 logging.basicConfig(

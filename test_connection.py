@@ -46,7 +46,7 @@ def test_google_drive():
     """Test Google Drive connection."""
     logger.info("\nTesting Google Drive connection...")
     try:
-        from gdrive_upload import GoogleDriveUploader
+        from gdrive_uploader import GoogleDriveUploader
         uploader = GoogleDriveUploader()
         
         # Try to list files
