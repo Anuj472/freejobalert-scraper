@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 
 from config import Config
+from slug_generator import generate_slug, validate_slug
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,59 @@ class SupabaseClient:
             self.has_fja_url_column = False
             logger.warning("⚠️  freejobalert_url column not found - run MIGRATION_ADD_FJA_URL.sql to add it")
             logger.info("   Deduplication will use job_url field (less reliable)")
+    
+    def get_jobs_with_null_slugs(self, limit: int = 100) -> List[Dict]:
+        """
+        Get jobs that have NULL slugs and need slug generation.
+        
+        Args:
+            limit: Maximum number of jobs to return
+        
+        Returns:
+            List of job records with null slugs
+        """
+        try:
+            result = self.client.table('jobs') \
+                .select('id, title, organization, freejobalert_url') \
+                .is_('slug', 'null') \
+                .limit(limit) \
+                .execute()
+            
+            jobs = result.data if result.data else []
+            logger.info(f"Found {len(jobs)} jobs with NULL slugs")
+            return jobs
+        except Exception as e:
+            logger.error(f"Error fetching jobs with null slugs: {e}")
+            return []
+    
+    def update_slug(self, job_id: str, slug: str) -> bool:
+        """
+        Update the slug for a specific job.
+        
+        Args:
+            job_id: UUID of the job record
+            slug: Generated slug
+        
+        Returns:
+            True if update successful, False otherwise
+        """
+        try:
+            if not validate_slug(slug):
+                logger.error(f"Invalid slug format: {slug}")
+                return False
+            
+            result = self.client.table('jobs') \
+                .update({'slug': slug}) \
+                .eq('id', job_id) \
+                .execute()
+            
+            if result.data:
+                logger.info(f"✓ Slug updated for job {job_id}: {slug}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error updating slug for job {job_id}: {e}")
+            return False
     
     def _parse_date(self, date_str: str) -> Optional[str]:
         """Convert date from DD-MM-YYYY or DD/MM/YYYY to YYYY-MM-DD."""
@@ -118,6 +172,7 @@ class SupabaseClient:
         """Insert a new job into the database.
         
         CRITICAL: job_url must be Apply Online link, never FreeJobAlert URL.
+        SLUG: Generated deterministically from title + organization + freejobalert_url.
         """
         try:
             # Get source URL (FreeJobAlert article page)
@@ -150,6 +205,19 @@ class SupabaseClient:
                 'category': job_data.get('category'),
                 'advt_no': job_data.get('advt_no'),
             }
+            
+            # Generate slug from title + organization + freejobalert_url (for uniqueness)
+            title = job_data.get('title')
+            org = job_data.get('organization')
+            if title and org:
+                slug = generate_slug(title, org, fja_url)
+                if slug:
+                    insert_data['slug'] = slug
+                    logger.info(f"✓ Generated slug: {slug}")
+                else:
+                    logger.warning("Failed to generate slug")
+            else:
+                logger.warning(f"Missing title or org for slug generation: title={bool(title)}, org={bool(org)}")
             
             # CRITICAL: job_url is Apply Online link from parser (can be NULL)
             job_url = job_data.get('job_url')  # From parser extraction
@@ -283,6 +351,8 @@ class SupabaseClient:
             
             if result.data:
                 logger.info(f"Successfully inserted job: {job_data.get('title')}")
+                if insert_data.get('slug'):
+                    logger.info(f"  - Slug: {insert_data['slug']}")
                 if insert_data.get('pdf_url'):
                     pdf_source = "Google Drive" if 'drive.google.com' in insert_data['pdf_url'] else "External"
                     logger.info(f"  - PDF ({pdf_source}): {insert_data['pdf_url'][:80]}")
