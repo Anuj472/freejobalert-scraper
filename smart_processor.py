@@ -1,334 +1,227 @@
-"""Smart Job Processor - CORRECTED PIPELINE.
-
-CORRECT FLOW:
-1. Scrape HTML → Extract ONLY links (job_url, pdf_url, official_website)
-2. If PDF found → Download and give PDF to LLM
-3. If NO PDF → Give raw HTML text to LLM
-4. LLM extracts ALL other fields (title, org, qualification, dates, etc.)
-5. Merge: Links from HTML + Everything else from LLM
-6. Generate slug + blog
-
-CRITICAL: HTML parser does NOT extract content fields, only links.
-"""
+# smart_processor.py
+# Pipeline: HTML scrape -> extract links -> PDF text OR raw HTML text
+#           -> LLM extraction -> merge (HTML links authoritative) -> blog -> Supabase
 
 import logging
-import re
-import requests
-from typing import Dict, Optional
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from typing import Optional
 
-from gemma_processor import GemmaProcessor
+from gemma_processor import GemmaProcessor, extract_pdf_text
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("smart_processor")
+SEP = "=" * 60
 
-class SmartJobProcessor:
-    """Smart processor: Extract links from HTML, give PDF/text to LLM."""
-    
-    def __init__(self):
-        """Initialize processor."""
-        self.gemma = GemmaProcessor()
-        
-        if self.gemma.is_available():
-            logger.info("✓ Smart processor initialized with Gemma 3")
-        else:
-            logger.warning("⚠️  Gemma 3 not available - scraper will only extract links!")
-    
-    def _is_freejobalert_link(self, url: str) -> bool:
-        """Check if URL is from FreeJobAlert (should be BLOCKED)."""
-        if not url:
-            return False
-        return 'freejobalert.com' in url.lower()
-    
-    def _extract_links_from_html(self, html: str, base_url: str) -> Dict:
-        """Extract ONLY links from HTML.
-        
-        Returns:
-        - job_url: Apply Online link
-        - pdf_url: Official PDF notification
-        - official_website: Official organization website
-        
-        Blocks all FreeJobAlert links.
+# Link fields that come only from HTML parsing — LLM output never overwrites these
+HTML_AUTHORITATIVE_FIELDS = {"apply_url", "pdf_url", "official_website"}
+
+
+class SmartProcessor:
+    """
+    Orchestrates the full extraction pipeline for a single FreeJobAlert job page.
+
+    Pipeline:
+      STEP 1  Extract link fields from HTML (authoritative source)
+      STEP 2  If PDF found -> extract PDF text; else use raw HTML text
+      STEP 3  Send content to LLM for all non-link fields
+      STEP 4  Merge: HTML links win, LLM fills everything else
+      STEP 5  Generate 9000-char SEO blog
+    """
+
+    def __init__(
+        self,
+        model: str = "gemma3:12b",
+        ollama_url: str = "http://localhost:11434",
+    ):
+        self.llm = GemmaProcessor(model=model, base_url=ollama_url)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Public entry point
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def process(
+        self,
+        html_content: str,
+        job_listing: Optional[dict] = None,
+    ) -> Optional[dict]:
         """
-        try:
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            links = {
-                'job_url': None,
-                'pdf_url': None,
-                'official_website': None,
-            }
-            
-            all_links = soup.find_all('a', href=True)
-            
-            for link in all_links:
-                href = link.get('href', '').strip()
-                text = link.get_text(strip=True).lower()
-                
-                if not href or href.startswith('#'):
-                    continue
-                
-                # Make absolute URL
-                if not href.startswith('http'):
-                    href = urljoin(base_url, href)
-                
-                # CRITICAL: Skip FreeJobAlert links
-                if self._is_freejobalert_link(href):
-                    continue
-                
-                # Get parent context
-                parent_text = ''
-                if link.parent:
-                    parent_text = link.parent.get_text(strip=True).lower()
-                
-                # Identify link type
-                
-                # 1. Apply Online link
-                if not links['job_url']:
-                    if any(kw in text for kw in ['apply online', 'click here to apply', 'apply now', 'register', 'login']):
-                        links['job_url'] = href
-                        logger.info(f"✓ Apply Online: {href[:60]}...")
-                        continue
-                    elif 'apply' in parent_text and ('online' in parent_text or 'click' in text):
-                        links['job_url'] = href
-                        logger.info(f"✓ Apply Online (context): {href[:60]}...")
-                        continue
-                
-                # 2. PDF notification
-                if not links['pdf_url'] and '.pdf' in href.lower():
-                    # Prefer links with notification/official keywords
-                    if any(kw in text or kw in parent_text for kw in ['notification', 'official', 'advertisement', 'download pdf']):
-                        links['pdf_url'] = href
-                        logger.info(f"✓ PDF: {href[:60]}...")
-                        continue
-                    # Fallback: any PDF link
-                    links['pdf_url'] = href
-                    logger.info(f"✓ PDF: {href[:60]}...")
-                
-                # 3. Official website
-                if not links['official_website']:
-                    if any(kw in text or kw in parent_text for kw in ['official website', 'official site', 'visit website']):
-                        links['official_website'] = href
-                        logger.info(f"✓ Official Website: {href[:60]}...")
-            
-            # Log summary
-            if not links['job_url']:
-                logger.warning("⚠️  Apply Online link not found")
-            if not links['pdf_url']:
-                logger.info("ℹ️  No PDF link found")
-            
-            return links
-            
-        except Exception as e:
-            logger.error(f"Error extracting links: {e}")
-            return {}
-    
-    def _get_raw_text_from_html(self, html: str) -> str:
-        """Extract clean text content from HTML for LLM processing."""
-        try:
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # Find main content
-            content = soup.find('div', class_='entry-content') or soup.find('article') or soup.body
-            
-            if not content:
-                return soup.get_text(separator='\n', strip=True)
-            
-            # Remove script/style tags
-            for tag in content(['script', 'style', 'iframe', 'nav', 'footer', 'header']):
-                tag.decompose()
-            
-            # Get clean text
-            raw_text = content.get_text(separator='\n', strip=True)
-            
-            # Limit to reasonable size (Gemma context limit)
-            if len(raw_text) > 10000:
-                raw_text = raw_text[:10000]
-            
-            return raw_text
-            
-        except Exception as e:
-            logger.error(f"Error extracting text: {e}")
-            return ""
-    
-    def process_job(self, job_listing: Dict, html: str, details_url: str) -> Dict:
-        """
-        CORRECT PIPELINE:
-        
-        1. Extract ONLY links from HTML (job_url, pdf_url, official_website)
-        2. Check if PDF found:
-           - YES: Download PDF → Give to LLM → Extract ALL fields
-           - NO: Give raw HTML text to LLM → Extract ALL fields
-        3. Merge: Links from HTML + All fields from LLM
-        4. Generate blog
-        
+        Process a single job page.
+
         Args:
-            job_listing: Basic info from listing page (title, org from table)
-            html: HTML content of detail page
-            details_url: URL of detail page
-        
+            html_content:  Raw HTML string of the FreeJobAlert article page.
+            job_listing:   Optional dict with pre-scraped metadata from the
+                           listing page (title, organization, vacancies, etc.).
+
         Returns:
-            Complete job data
+            Merged job dict ready for Supabase insertion, or None on failure.
         """
-        
-        logger.info("="*60)
+        if job_listing is None:
+            job_listing = {}
+
+        # ── STEP 1: Extract links from HTML ──────────────────────────────────
+        logger.info(SEP)
         logger.info("STEP 1: Extracting ONLY links from HTML...")
-        
-        # STEP 1: Extract ONLY links from HTML
-        html_links = self._extract_links_from_html(html, details_url)
-        
-        # STEP 2: Check if PDF found
-        pdf_url = html_links.get('pdf_url')
-        
-        llm_data = None
-        source = None
-        
-        if pdf_url and self.gemma.is_available():
-            logger.info("="*60)
-            logger.info("🞼 SCENARIO: PDF Found")
-            logger.info("STEP 2: Downloading PDF and giving to LLM...")
-            logger.info(f"PDF URL: {pdf_url[:70]}...")
-            
-            # Give PDF to LLM - extracts ALL fields
-            llm_data = self.gemma.process_pdf_url(pdf_url)
-            
-            if llm_data:
-                source = 'pdf_gemma3'
-                logger.info("✓ LLM extracted ALL fields from PDF")
-                logger.info(f"   Extracted {len([v for v in llm_data.values() if v])} fields")
-            else:
-                logger.warning("⚠️  PDF extraction failed, falling back to HTML text...")
-        
-        # STEP 3: NO PDF or PDF failed → Give raw HTML text to LLM
-        if not llm_data:
-            if self.gemma.is_available():
-                logger.info("="*60)
-                logger.info("📄 SCENARIO: NO PDF or PDF failed")
-                logger.info("STEP 3: Extracting raw text from HTML and giving to LLM...")
-                
-                raw_text = self._get_raw_text_from_html(html)
-                
-                if raw_text:
-                    logger.info(f"Raw text length: {len(raw_text)} chars")
-                    
-                    # Give raw text to LLM - extracts ALL fields
-                    llm_data = self.gemma.process_text(raw_text)
-                    
-                    if llm_data:
-                        source = 'html_gemma3'
-                        logger.info("✓ LLM extracted ALL fields from HTML text")
-                        logger.info(f"   Extracted {len([v for v in llm_data.values() if v])} fields")
-                    else:
-                        logger.error("❌ LLM extraction failed!")
-                        llm_data = {}
-                else:
-                    logger.error("❌ Could not extract text from HTML!")
-                    llm_data = {}
-            else:
-                logger.error("❌ Gemma not available! Cannot extract fields.")
-                logger.error("Only links will be available.")
-                llm_data = {}
-        
-        # STEP 4: Merge data
-        logger.info("="*60)
-        logger.info("STEP 4: Merging data...")
-        
-        # Start with job listing data (basic table data)
-        final_data = {**job_listing}
-        
-        # Add ALL LLM extracted fields (overwrite table data with LLM data)
-        if llm_data:
-            final_data.update(llm_data)
-        
-        # Add links from HTML (authoritative for URLs)
-        final_data.update(html_links)
-        
-        # Set data source
-        final_data['data_source'] = source or 'html_only'
-        
-        # CRITICAL: Ensure NO FreeJobAlert links
-        for field in ['job_url', 'pdf_url', 'official_website']:
-            url = final_data.get(field)
-            if url and self._is_freejobalert_link(url):
-                logger.warning(f"🚨 Removing FreeJobAlert link from {field}")
-                final_data[field] = None
-        
-        # Log final summary
-        logger.info("="*60)
-        logger.info("📦 FINAL DATA SUMMARY:")
-        logger.info(f"   Source: {final_data.get('data_source')}")
-        logger.info(f"   Title: {final_data.get('title', 'N/A')[:50]}...")
-        logger.info(f"   Organization: {final_data.get('organization', 'N/A')[:50]}...")
-        if final_data.get('category'):
-            logger.info(f"   ✓ Category: {final_data['category']}")
-        if final_data.get('qualification'):
-            logger.info(f"   ✓ Qualification: {final_data['qualification'][:40]}...")
-        if final_data.get('location'):
-            logger.info(f"   ✓ Location: {final_data['location']}")
-        if final_data.get('vacancies'):
-            logger.info(f"   ✓ Vacancies: {final_data['vacancies']}")
-        if final_data.get('job_url'):
-            logger.info(f"   ✓ Apply URL: {final_data['job_url'][:60]}...")
-        if final_data.get('pdf_url'):
-            logger.info(f"   ✓ PDF URL: {final_data['pdf_url'][:60]}...")
-        logger.info("="*60)
-        
-        # STEP 5: Generate blog
-        if self.gemma.is_available():
-            logger.info("🤖 Generating SEO blog...")
-            blog_content = self.gemma.generate_blog(final_data)
-            
-            if blog_content:
-                final_data['seo_title'] = blog_content.get('seo_title')
-                final_data['meta_description'] = blog_content.get('meta_description')
-                final_data['blog_article'] = blog_content.get('article')
-                final_data['highlights'] = blog_content.get('highlights')
-                final_data['faqs'] = blog_content.get('faqs')
-                
-                logger.info(f"✓ Blog generated ({len(blog_content.get('article', ''))} chars)")
-            else:
-                final_data.update(self._generate_template_blog(final_data))
+        html_links = _extract_links_from_html(html_content)
+
+        if html_links.get("apply_url"):
+            logger.info(f"\u2713 Apply Online (context): {html_links['apply_url'][:60]}...")
         else:
-            final_data.update(self._generate_template_blog(final_data))
-        
-        return final_data
-    
-    def _generate_template_blog(self, data: Dict) -> Dict:
-        """Generate simple template-based blog as fallback."""
-        
-        title = data.get('title', 'Job Recruitment')
-        org = data.get('organization', 'Organization')
-        vacancies = data.get('vacancies', 'multiple')
-        last_date = data.get('last_date', 'Check notification')
-        
-        seo_title = f"{title[:60]}..."
-        meta_description = f"{org} recruitment. Apply for {vacancies} posts. Last date: {last_date}."
-        
-        article = f"""# {title}
+            logger.warning("\u26a0\ufe0f  Apply Online link not found")
 
-## Overview
-{org} has announced recruitment for {vacancies} posts. Last date: {last_date}.
+        if html_links.get("pdf_url"):
+            logger.info(f"\u2713 PDF: {html_links['pdf_url'][:60]}...")
+        else:
+            logger.info("\u2139\ufe0f  No PDF link found")
 
-## Key Highlights
-- Total Posts: {vacancies}
-- Last Date: {last_date}
-- Organization: {org}
-"""
-        
-        highlights = [
-            f"Total Posts: {vacancies}",
-            f"Last Date: {last_date}",
-            f"Organization: {org}"
-        ]
-        
-        faqs = [
-            {"question": "What is the last date?", "answer": f"Last date is {last_date}."}
-        ]
-        
-        return {
-            'seo_title': seo_title,
-            'meta_description': meta_description[:160],
-            'blog_article': article,
-            'highlights': highlights,
-            'faqs': faqs
+        if html_links.get("official_website"):
+            logger.info(f"\u2713 Official Website: {html_links['official_website'][:60]}...")
+
+        # ── STEP 2: Prepare content for LLM ──────────────────────────────────
+        logger.info(SEP)
+        llm_content: Optional[str] = None
+        content_label = "HTML Text"
+
+        if html_links.get("pdf_url"):
+            logger.info("\U0001f9de  SCENARIO: PDF Found")
+            logger.info("STEP 2: Downloading PDF and giving to LLM... ")
+            logger.info(f"PDF URL: {html_links['pdf_url'][:80]}...")
+            pdf_text = extract_pdf_text(html_links["pdf_url"])
+            if pdf_text:
+                llm_content = pdf_text
+                content_label = "PDF Text"
+                logger.info(f"\u2713 Using PDF text ({len(pdf_text)} chars)")
+            else:
+                logger.warning(
+                    "\u26a0\ufe0f  PDF extraction failed, falling back to HTML text..."
+                )
+
+        if llm_content is None:
+            logger.info(SEP)
+            logger.info("\U0001f4c4 SCENARIO: NO PDF or PDF failed")
+            logger.info("STEP 3: Extracting raw text from HTML and giving to LLM...")
+            llm_content = _extract_raw_text(html_content)
+            logger.info(f"Raw text length: {len(llm_content)} chars")
+
+        # ── STEP 3: LLM field extraction ──────────────────────────────────────
+        logger.info(SEP)
+        llm_fields = self.llm.extract_fields(llm_content, content_label)
+
+        if llm_fields:
+            logger.info(f"\u2713 LLM extracted ALL fields from {content_label}")
+            logger.info(f"   Extracted {len(llm_fields)} fields")
+        else:
+            logger.error("\u274c LLM extraction failed!")
+
+        # ── STEP 4: Merge ─────────────────────────────────────────────────────
+        logger.info(SEP)
+        logger.info("STEP 4: Merging data...")
+
+        # Seed with listing-level metadata (from scraper / FreeJobAlert listing)
+        merged: dict = {
+            "title":        job_listing.get("title"),
+            "organization": job_listing.get("organization"),
+            "vacancies":    job_listing.get("vacancies"),
         }
+        # Remove None seeds so LLM can fill them
+        merged = {k: v for k, v in merged.items() if v is not None}
+
+        # Layer in LLM output for all non-link fields
+        if llm_fields:
+            for key, value in llm_fields.items():
+                if key not in HTML_AUTHORITATIVE_FIELDS and value:
+                    merged[key] = value
+
+        # HTML links are always authoritative — overwrite whatever LLM said
+        for field in HTML_AUTHORITATIVE_FIELDS:
+            val = html_links.get(field)
+            if val:
+                merged[field] = val
+
+        # Tag data source for audit
+        if content_label == "PDF Text" and llm_fields:
+            merged["data_source"] = "pdf_gemma3"
+        elif llm_fields:
+            merged["data_source"] = "html_gemma3"
+        else:
+            merged["data_source"] = "html_only"
+
+        _log_summary(merged)
+
+        # ── STEP 5: SEO blog generation ───────────────────────────────────────
+        logger.info(SEP)
+        logger.info("\U0001f916 Generating SEO blog...")
+        blog = self.llm.generate_blog(merged)
+        if blog:
+            merged["blog"] = blog
+            logger.info(f"\u2713 Blog generated ({len(blog)} chars)")
+        else:
+            logger.warning("\u26a0\ufe0f  Blog generation failed")
+
+        return merged
+
+
+# ─── HELPERS ────────────────────────────────────────────────────────────────────
+
+def _extract_links_from_html(html: str) -> dict:
+    """
+    Extract apply_url, pdf_url, official_website from raw HTML.
+    HTML is the single source of truth for link fields.
+    """
+    from bs4 import BeautifulSoup
+    import re
+
+    soup = BeautifulSoup(html, "html.parser")
+    links = {"apply_url": None, "pdf_url": None, "official_website": None}
+
+    apply_re   = re.compile(r'apply[\s_-]?online|apply[\s_-]?now|apply[\s_-]?here|register\s+now', re.I)
+    pdf_re     = re.compile(r'\.pdf(\?.*)?$', re.I)
+    official_re = re.compile(r'official[\s_-]?(website|site|link|notification)', re.I)
+
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].strip()
+        text = tag.get_text(strip=True)
+
+        if not href or href.startswith("#") or href.startswith("javascript"):
+            continue
+
+        # PDF link
+        if pdf_re.search(href) and not links["pdf_url"]:
+            links["pdf_url"] = href
+
+        # Apply Online link (must point outside FreeJobAlert)
+        elif apply_re.search(text) and not links["apply_url"]:
+            if href.startswith("http") and "freejobalert" not in href.lower():
+                links["apply_url"] = href
+
+        # Official website
+        elif official_re.search(text) and not links["official_website"]:
+            if href.startswith("http"):
+                links["official_website"] = href
+
+    return links
+
+
+def _extract_raw_text(html: str) -> str:
+    """Extract clean plain text from HTML, stripping nav/footer noise."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+        tag.decompose()
+    lines = [
+        line.strip()
+        for line in soup.get_text("\n").splitlines()
+        if line.strip()
+    ]
+    return "\n".join(lines)
+
+
+def _log_summary(data: dict) -> None:
+    logger.info(SEP)
+    logger.info("\U0001f4e6 FINAL DATA SUMMARY:")
+    logger.info(f"   Source: {data.get('data_source')}")
+    logger.info(f"   Title: {str(data.get('title', ''))[:50]}...")
+    logger.info(f"   Organization: {str(data.get('organization', ''))[:30]}...")
+    for field in ["category", "qualification", "vacancies", "apply_url", "pdf_url"]:
+        val = data.get(field)
+        if val:
+            logger.info(f"   \u2713 {field.replace('_', ' ').title()}: {str(val)[:50]}...")
+    logger.info(SEP)
