@@ -14,7 +14,7 @@ SEP = "=" * 60
 HTML_AUTHORITATIVE_FIELDS = {"apply_url", "pdf_url", "official_website"}
 
 
-class SmartProcessor:
+class SmartJobProcessor:
     """
     Orchestrates the full extraction pipeline for a single FreeJobAlert job page.
 
@@ -33,22 +33,24 @@ class SmartProcessor:
     ):
         self.llm = GemmaProcessor(model=model, base_url=ollama_url)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Public entry point
-    # ──────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
+    # Public entry point  (matches scraper.py call signature)
+    # -------------------------------------------------------------------------
 
-    def process(
+    def process_job(
         self,
+        job_listing: dict,
         html_content: str,
-        job_listing: Optional[dict] = None,
+        details_url: Optional[str] = None,
     ) -> Optional[dict]:
         """
-        Process a single job page.
+        Process a single FreeJobAlert job page.
 
         Args:
-            html_content:  Raw HTML string of the FreeJobAlert article page.
-            job_listing:   Optional dict with pre-scraped metadata from the
-                           listing page (title, organization, vacancies, etc.).
+            job_listing:   Basic metadata from listing page
+                           (title, organization, vacancies, last_date, etc.).
+            html_content:  Raw HTML string of the job detail article page.
+            details_url:   The article URL (stored as freejobalert_url).
 
         Returns:
             Merged job dict ready for Supabase insertion, or None on failure.
@@ -90,7 +92,7 @@ class SmartProcessor:
                 logger.info(f"\u2713 Using PDF text ({len(pdf_text)} chars)")
             else:
                 logger.warning(
-                    "\u26a0\ufe0f  PDF extraction failed, falling back to HTML text..."
+                    "\u26a0\ufe0f  PDF extraction failed, falling back too HTML text..."
                 )
 
         if llm_content is None:
@@ -114,14 +116,20 @@ class SmartProcessor:
         logger.info(SEP)
         logger.info("STEP 4: Merging data...")
 
-        # Seed with listing-level metadata (from scraper / FreeJobAlert listing)
+        # Seed with listing-level metadata from the scraper
         merged: dict = {
             "title":        job_listing.get("title"),
             "organization": job_listing.get("organization"),
             "vacancies":    job_listing.get("vacancies"),
+            "last_date":    job_listing.get("last_date"),
+            "qualification": job_listing.get("qualification"),
         }
-        # Remove None seeds so LLM can fill them
+        # Remove None seeds so LLM values fill them
         merged = {k: v for k, v in merged.items() if v is not None}
+
+        # Carry forward freejobalert_url if provided
+        if details_url:
+            merged["freejobalert_url"] = details_url
 
         # Layer in LLM output for all non-link fields
         if llm_fields:
@@ -158,6 +166,10 @@ class SmartProcessor:
         return merged
 
 
+# Backward-compatible alias (in case anything imports SmartProcessor)
+SmartProcessor = SmartJobProcessor
+
+
 # ─── HELPERS ────────────────────────────────────────────────────────────────────
 
 def _extract_links_from_html(html: str) -> dict:
@@ -171,8 +183,8 @@ def _extract_links_from_html(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     links = {"apply_url": None, "pdf_url": None, "official_website": None}
 
-    apply_re   = re.compile(r'apply[\s_-]?online|apply[\s_-]?now|apply[\s_-]?here|register\s+now', re.I)
-    pdf_re     = re.compile(r'\.pdf(\?.*)?$', re.I)
+    apply_re    = re.compile(r'apply[\s_-]?online|apply[\s_-]?now|apply[\s_-]?here|register\s+now', re.I)
+    pdf_re      = re.compile(r'\.pdf(\?.*)?$', re.I)
     official_re = re.compile(r'official[\s_-]?(website|site|link|notification)', re.I)
 
     for tag in soup.find_all("a", href=True):
