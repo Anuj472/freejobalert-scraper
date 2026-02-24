@@ -14,7 +14,7 @@ from typing import Optional
 
 logger = logging.getLogger("gemma_processor")
 
-# Browser-like headers that Indian government servers accept
+# Browser-like headers (used as HTTP-level fallback)
 _PDF_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -33,20 +33,14 @@ _PDF_HEADERS = {
 
 def _repair_json(raw: str) -> Optional[dict]:
     """Progressively try to parse / repair LLM JSON output."""
-    # 1. Direct parse
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
 
-    # 2. Pull out first {...} block (LLM sometimes wraps JSON in markdown)
     m = re.search(r'\{.*\}', raw, re.DOTALL)
     candidate = m.group(0) if m else raw
-
-    # 3. Strip trailing commas before } or ]
     candidate = re.sub(r',\s*([}\]])', r'\1', candidate)
-
-    # 4. Replace smart / curly quotes
     candidate = (
         candidate
         .replace('\u201c', '"').replace('\u201d', '"')
@@ -58,7 +52,6 @@ def _repair_json(raw: str) -> Optional[dict]:
     except json.JSONDecodeError:
         pass
 
-    # 5. Try json_repair library (pip install json-repair)
     try:
         from json_repair import repair_json
         return json.loads(repair_json(candidate))
@@ -69,7 +62,66 @@ def _repair_json(raw: str) -> Optional[dict]:
     return None
 
 
-# ─── PDF TEXT EXTRACTION (no poppler, no images) ────────────────────────────────────────────
+# ─── PDF DOWNLOAD HELPERS ───────────────────────────────────────────────────────────────────
+
+def _download_with_curl_cffi(
+    url: str,
+    headers: dict,
+    timeout: int = 60,
+) -> Optional[bytes]:
+    """
+    Download using curl_cffi which impersonates Chrome TLS fingerprint.
+
+    Many Indian government servers (indianrailways.gov.in, etc.) use TLS
+    fingerprinting (JA3) to block non-browser clients at the TCP level
+    (ECONNREFUSED / ECONNRESET). curl_cffi sends an identical TLS handshake
+    to Chrome so the server accepts the connection.
+
+    Returns raw bytes, or None if unavailable / failed.
+    """
+    try:
+        from curl_cffi import requests as curl_requests
+        resp = curl_requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            impersonate="chrome122",   # sends real Chrome 122 TLS fingerprint
+            allow_redirects=True,
+            verify=False,
+        )
+        resp.raise_for_status()
+        logger.info("   (downloaded via curl_cffi / Chrome TLS fingerprint)")
+        return resp.content
+    except ImportError:
+        logger.debug("curl_cffi not installed, will fall back to requests")
+        return None
+    except Exception as exc:
+        logger.warning(f"curl_cffi download failed: {exc}")
+        return None
+
+
+def _download_with_requests(
+    url: str,
+    headers: dict,
+    timeout: int = 60,
+) -> Optional[bytes]:
+    """Standard requests download (HTTP/1.1). Works for most servers."""
+    try:
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=True,
+            verify=False,
+        )
+        resp.raise_for_status()
+        logger.info("   (downloaded via requests / HTTP 1.1)")
+        return resp.content
+    except Exception as exc:
+        raise exc  # let caller log & retry
+
+
+# ─── PDF TEXT EXTRACTION ───────────────────────────────────────────────────────────────────
 
 def extract_pdf_text(
     pdf_url: str,
@@ -78,56 +130,43 @@ def extract_pdf_text(
     referer: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Download a PDF with browser-like headers and extract its full text.
+    Download a PDF and extract its full text.
 
-    Uses the `requests` library (HTTP/1.1) instead of httpx so that Indian
-    government servers (e.g. indianrailways.gov.in) do not refuse the
-    connection with ECONNREFUSED.
+    Download strategy (in order):
+      1. curl_cffi with Chrome TLS impersonation  ← fixes ECONNREFUSED on
+                                                     TLS-fingerprinting servers
+      2. requests with browser UA headers          ← handles HTTP-level blocks
 
-    Primary:  pdfplumber  (pure-Python, no poppler needed)
-    Fallback: pymupdf / fitz
+    Text extraction strategy:
+      1. pdfplumber  (pure-Python, no poppler)
+      2. pymupdf / fitz  (fallback)
 
     Args:
-        pdf_url   : Direct URL to the PDF file.
-        max_pages : Maximum number of PDF pages to read (default 10).
-        max_chars : If > 0, truncate output to this many characters.
-                    Default is 0 (no truncation — full document passed to LLM).
-        referer   : URL to send as the Referer header.  Pass the FreeJobAlert
-                    article URL so government servers accept the request.
-
-    Returns:
-        Extracted text string, or None if the PDF is image-only / unreadable.
+        pdf_url   : Direct URL to the PDF.
+        max_pages : Max PDF pages to read (default 10).
+        max_chars : If > 0, truncate to this many chars.
+                    Default 0 = no cap, full document to LLM.
+        referer   : HTTP Referer header (pass the FreeJobAlert article URL).
     """
-    # Build headers — add Referer if supplied
     headers = dict(_PDF_HEADERS)
-    if referer:
-        headers["Referer"] = referer
-    else:
-        headers["Referer"] = "https://www.freejobalert.com/"
+    headers["Referer"] = referer or "https://www.freejobalert.com/"
 
     for attempt in range(2):
         try:
             logger.info(f"Downloading PDF from: {pdf_url[:80]}...")
 
-            # Use requests (HTTP/1.1) — httpx HTTP/2 causes ECONNREFUSED on
-            # many Indian government servers.
-            resp = requests.get(
-                pdf_url,
-                headers=headers,
-                timeout=60,
-                allow_redirects=True,
-                verify=False,          # many .gov.in sites have cert issues
-            )
-            resp.raise_for_status()
-            pdf_bytes = resp.content
+            # Strategy 1: curl_cffi (Chrome TLS fingerprint)
+            pdf_bytes = _download_with_curl_cffi(pdf_url, headers)
+
+            # Strategy 2: requests fallback
+            if pdf_bytes is None:
+                pdf_bytes = _download_with_requests(pdf_url, headers)
 
             size_mb = len(pdf_bytes) / 1024 / 1024
             logger.info(f"\u2713 PDF downloaded: {size_mb:.2f} MB")
 
-            # Try pdfplumber first
+            # Extract text
             text = _extract_with_pdfplumber(pdf_bytes, max_pages)
-
-            # Fallback to pymupdf
             if not text:
                 logger.info("pdfplumber returned no text \u2192 trying pymupdf...")
                 text = _extract_with_pymupdf(pdf_bytes, max_pages)
@@ -139,8 +178,6 @@ def extract_pdf_text(
                 return None
 
             raw_len = len(text)
-
-            # Only truncate if an explicit cap was requested
             if max_chars and max_chars > 0:
                 trimmed = text[:max_chars]
                 logger.info(
@@ -154,12 +191,6 @@ def extract_pdf_text(
                 )
 
             return trimmed
-
-        except requests.exceptions.SSLError as ssl_err:
-            logger.warning(f"SSL error (attempt {attempt+1}): {ssl_err} — retrying without verify")
-            # Already verify=False, so if we hit this it's a different TLS issue
-            if attempt == 0:
-                time.sleep(1)
 
         except Exception as exc:
             logger.error(f"\u274c PDF attempt {attempt + 1} failed: {exc}")
@@ -303,10 +334,7 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         content: str,
         content_label: str = "HTML Text",
     ) -> Optional[dict]:
-        """
-        Extract structured job fields from HTML text or PDF text.
-        Full content is passed — no truncation.
-        """
+        """Extract structured job fields. Full content passed — no truncation."""
         prompt = self.EXTRACT_PROMPT.format(
             content_label=content_label,
             content=content,
@@ -317,9 +345,7 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
 
         result = _repair_json(raw)
         if result:
-            logger.info(
-                f"\u2713 LLM extracted {len(result)} fields from {content_label}"
-            )
+            logger.info(f"\u2713 LLM extracted {len(result)} fields from {content_label}")
         else:
             logger.error(f"Failed to parse LLM JSON: {raw[:300]}")
         return result
@@ -338,9 +364,7 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         logger.info(f"\u2713 Blog generated ({len(blog)} chars)")
 
         if len(blog) < 6000:
-            logger.warning(
-                f"\u26a0\ufe0f  Blog too short ({len(blog)} chars) — requesting expansion..."
-            )
+            logger.warning(f"\u26a0\ufe0f  Blog too short ({len(blog)} chars) — requesting expansion...")
             expand_prompt = (
                 f"The blog below is too short ({len(blog)} chars). "
                 f"Expand it to at least 9000 characters by:\n"

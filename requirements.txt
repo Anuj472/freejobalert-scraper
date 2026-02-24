@@ -4,6 +4,11 @@ beautifulsoup4==4.12.3
 lxml==5.1.0
 # httpx is managed by supabase – do NOT pin it here to avoid version conflicts
 
+# Browser TLS fingerprint for Indian gov PDF downloads (fixes ECONNREFUSED)
+# Wraps libcurl and impersonates Chrome/Safari TLS at the handshake level.
+# Without this, mrvc.indianrailways.gov.in and similar sites refuse TCP connections.
+curl_cffi>=0.6.0
+
 # Database
 supabase==2.0.3
 
@@ -20,14 +25,13 @@ python-dateutil==2.8.2
 # PDF Processing (pure Python - NO poppler binary required)
 # pdfplumber: primary text extractor
 # pymupdf (fitz): fallback text extractor
-# pdf2image / PyPDF2 removed - they require poppler OS binary
 pdfplumber>=0.10.3
 pymupdf>=1.23.0
 
 # JSON Repair (fixes malformed LLM JSON output)
 json-repair>=0.28.0
 
-# Image support (still needed for Pillow utilities)
+# Image support
 Pillow==10.2.0
 
 # Logging and Monitoring
@@ -42,19 +46,7 @@ pandas==2.1.4
 # Uses Ollama HTTP API - NO PYTHON PACKAGE NEEDED
 # Just install Ollama and run: ollama pull gemma3:12b
 #
-# Features:
-# - Text processing (HTML text + PDF text, no image conversion)
-# - SEO blog generation (9000+ characters, 11 sections)
-# - 128K context window
-# - 100% free, private, works offline
-#
 # Setup:
 # 1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
 # 2. Pull model:    ollama pull gemma3:12b
 # 3. Start server:  ollama serve
-#
-# PDF Processing (no poppler needed now):
-#   pip install pdfplumber pymupdf
-#   pdfplumber  -> extracts text from digital PDFs
-#   pymupdf     -> fallback for edge cases
-#   For scanned/image PDFs -> falls back to HTML text automatically
