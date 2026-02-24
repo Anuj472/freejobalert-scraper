@@ -8,13 +8,6 @@ from typing import Optional
 
 from gemma_processor import GemmaProcessor, extract_pdf_text
 
-try:
-    from gdrive_uploader import GoogleDriveUploader
-    GDRIVE_AVAILABLE = True
-except ImportError:
-    GDRIVE_AVAILABLE = False
-    logging.warning("GoogleDriveUploader not available - freejobalert PDFs won't be uploaded")
-
 logger = logging.getLogger("smart_processor")
 SEP = "=" * 60
 
@@ -28,7 +21,7 @@ class SmartJobProcessor:
 
     Pipeline:
       STEP 1  Extract link fields from HTML table (authoritative source)
-              - If PDF is hosted on freejobalert.com → upload to Google Drive
+              - If PDF is hosted on freejobalert.com → upload to Google Drive (if available)
       STEP 2  If PDF found → extract PDF text; else use raw HTML text
       STEP 3  Send content to LLM for all non-link fields
       STEP 4  Merge: HTML links win, LLM fills everything else
@@ -41,7 +34,18 @@ class SmartJobProcessor:
         ollama_url: str = "http://localhost:11434",
     ):
         self.llm = GemmaProcessor(model=model, base_url=ollama_url)
-        self.gdrive_uploader = GoogleDriveUploader() if GDRIVE_AVAILABLE else None
+        
+        # Try to initialize Google Drive uploader (optional)
+        self.gdrive_uploader = None
+        try:
+            from gdrive_uploader import GoogleDriveUploader
+            self.gdrive_uploader = GoogleDriveUploader()
+            logger.info("✓ Google Drive uploader initialized")
+        except ImportError:
+            logger.warning("⚠️  GoogleDriveUploader not available - freejobalert PDFs won't be uploaded to Drive")
+        except Exception as e:
+            logger.warning(f"⚠️  Google Drive authentication failed: {e}")
+            logger.warning("   Continuing without Drive upload - freejobalert PDFs will use original links")
 
     # -------------------------------------------------------------------------
     # Public entry point  (matches scraper.py call signature)
@@ -68,32 +72,35 @@ class SmartJobProcessor:
         if job_listing is None:
             job_listing = {}
 
-        # ── STEP 1: Extract links from HTML table ─────────────────────────────
+        # ── STEP 1: Extract links from HTML table ────────────────────────────
         logger.info(SEP)
         logger.info("STEP 1: Extracting ONLY links from HTML table...")
         html_links = _extract_links_from_html(html_content)
 
-        # Handle freejobalert-hosted PDFs → upload to Google Drive
+        # Handle freejobalert-hosted PDFs → upload to Google Drive (if available)
         if html_links.get("pdf_url"):
             pdf_url = html_links["pdf_url"]
             logger.info(f"✓ PDF found: {pdf_url[:70]}...")
 
-            if "freejobalert" in pdf_url.lower() and self.gdrive_uploader:
-                logger.info("   → PDF hosted on freejobalert.com, uploading to Google Drive...")
-                try:
-                    job_title = job_listing.get("title", "Unknown Job")
-                    drive_link = self.gdrive_uploader.upload_pdf_from_url(
-                        pdf_url,
-                        job_title=job_title
-                    )
-                    if drive_link:
-                        logger.info(f"   ✓ Uploaded to Drive: {drive_link[:60]}...")
-                        html_links["pdf_url"] = drive_link  # Replace with Drive link
-                    else:
-                        logger.warning("   ⚠️  Drive upload failed, keeping original link")
-                except Exception as e:
-                    logger.error(f"   ❌ Drive upload error: {e}")
-                    # Keep original freejobalert link if upload fails
+            if "freejobalert" in pdf_url.lower():
+                if self.gdrive_uploader:
+                    logger.info("   → PDF hosted on freejobalert.com, uploading to Google Drive...")
+                    try:
+                        job_title = job_listing.get("title", "Unknown Job")
+                        drive_link = self.gdrive_uploader.upload_pdf_from_url(
+                            pdf_url,
+                            job_title=job_title
+                        )
+                        if drive_link:
+                            logger.info(f"   ✓ Uploaded to Drive: {drive_link[:60]}...")
+                            html_links["pdf_url"] = drive_link  # Replace with Drive link
+                        else:
+                            logger.warning("   ⚠️  Drive upload failed, keeping original freejobalert link")
+                    except Exception as e:
+                        logger.error(f"   ❌ Drive upload error: {e}")
+                        # Keep original freejobalert link if upload fails
+                else:
+                    logger.info("   → PDF hosted on freejobalert.com (Drive upload unavailable, keeping original link)")
             else:
                 logger.info("   → External PDF (not freejobalert), keeping original link")
         else:
@@ -107,7 +114,7 @@ class SmartJobProcessor:
         if html_links.get("official_website"):
             logger.info(f"✓ Official Website: {html_links['official_website'][:60]}...")
 
-        # ── STEP 2: Prepare content for LLM ───────────────────────────────────
+        # ── STEP 2: Prepare content for LLM ──────────────────────────────────
         logger.info(SEP)
         llm_content: Optional[str] = None
         content_label = "HTML Text"
@@ -135,7 +142,7 @@ class SmartJobProcessor:
             llm_content = _extract_raw_text(html_content)
             logger.info(f"Raw text length: {len(llm_content)} chars")
 
-        # ── STEP 3: LLM field extraction ───────────────────────────────────────
+        # ── STEP 3: LLM field extraction ──────────────────────────────────────
         logger.info(SEP)
         llm_fields = self.llm.extract_fields(llm_content, content_label)
 
@@ -145,7 +152,7 @@ class SmartJobProcessor:
         else:
             logger.error("❌ LLM extraction failed!")
 
-        # ── STEP 4: Merge ──────────────────────────────────────────────────────
+        # ── STEP 4: Merge ─────────────────────────────────────────────────────
         logger.info(SEP)
         logger.info("STEP 4: Merging data...")
 
@@ -186,7 +193,7 @@ class SmartJobProcessor:
 
         _log_summary(merged)
 
-        # ── STEP 5: SEO blog generation ────────────────────────────────────────
+        # ── STEP 5: SEO blog generation ───────────────────────────────────────
         logger.info(SEP)
         logger.info("🤖 Generating SEO blog...")
         blog = self.llm.generate_blog(merged)
@@ -203,7 +210,7 @@ class SmartJobProcessor:
 SmartProcessor = SmartJobProcessor
 
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────────
+# ─── HELPERS ────────────────────────────────────────────────────────────────────
 
 def _extract_links_from_html(html: str) -> dict:
     """
