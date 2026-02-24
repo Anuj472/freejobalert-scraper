@@ -2,6 +2,7 @@
 
 import logging
 import os
+import json
 import tempfile
 import time
 from typing import Optional, Dict
@@ -22,35 +23,116 @@ class GoogleDriveUploader:
     """Upload PDFs to Google Drive and get shareable links."""
     
     SCOPES = ['https://www.googleapis.com/auth/drive.file']
+    REQUIRED_FIELDS = ['type', 'project_id', 'private_key_id', 'private_key', 
+                       'client_email', 'client_id', 'auth_uri', 'token_uri']
     
     def __init__(self):
         """Initialize Google Drive service."""
         self.service = None
         self.folder_id = Config.GOOGLE_DRIVE_FOLDER_ID
-        self._authenticate()
+        self._validate_and_authenticate()
     
-    def _authenticate(self):
-        """Authenticate with Google Drive API."""
+    def _validate_and_authenticate(self):
+        """Validate credentials file and authenticate with Google Drive API."""
+        credentials_path = Config.GOOGLE_CREDENTIALS_PATH
+        
+        # Check if file exists
+        if not os.path.exists(credentials_path):
+            error_msg = (
+                f"\n\n{'='*70}\n"
+                f"ERROR: Google Drive credentials file not found!\n"
+                f"{'='*70}\n"
+                f"Expected location: {credentials_path}\n\n"
+                f"To fix this:\n"
+                f"1. Go to Google Cloud Console: https://console.cloud.google.com/\n"
+                f"2. Create a Service Account (or use existing)\n"
+                f"3. Enable Google Drive API for your project\n"
+                f"4. Create a JSON key for the service account\n"
+                f"5. Download the JSON file and save it as: {credentials_path}\n"
+                f"6. Share your Google Drive folder with the service account email\n"
+                f"7. Set GOOGLE_DRIVE_FOLDER_ID in .env\n"
+                f"{'='*70}\n"
+            )
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+        
+        # Validate JSON structure
         try:
-            credentials_path = Config.GOOGLE_CREDENTIALS_PATH
+            with open(credentials_path, 'r') as f:
+                creds_data = json.load(f)
             
-            if not os.path.exists(credentials_path):
-                raise FileNotFoundError(
-                    f"Google credentials file not found: {credentials_path}\n"
-                    "Please download your service account key from Google Cloud Console."
+            # Check for required fields
+            missing_fields = [field for field in self.REQUIRED_FIELDS 
+                            if field not in creds_data]
+            
+            if missing_fields:
+                error_msg = (
+                    f"\n\n{'='*70}\n"
+                    f"ERROR: Invalid Google Drive credentials file!\n"
+                    f"{'='*70}\n"
+                    f"File: {credentials_path}\n"
+                    f"Missing required fields: {', '.join(missing_fields)}\n\n"
+                    f"Your credentials file must be a SERVICE ACCOUNT key (not OAuth client).\n\n"
+                    f"To fix this:\n"
+                    f"1. Go to: https://console.cloud.google.com/iam-admin/serviceaccounts\n"
+                    f"2. Select your project\n"
+                    f"3. Create a NEW service account (or select existing)\n"
+                    f"4. Click 'Keys' tab → 'Add Key' → 'Create new key' → 'JSON'\n"
+                    f"5. Download and replace {credentials_path}\n"
+                    f"6. The file should contain 'client_email', 'private_key', etc.\n"
+                    f"{'='*70}\n"
                 )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
             
-            # Use service account credentials
+            # Check folder ID
+            if not self.folder_id:
+                logger.warning(
+                    "\n⚠️  GOOGLE_DRIVE_FOLDER_ID not set in .env\n"
+                    "   PDFs will be uploaded to root of Drive (not recommended)\n"
+                    "   Set GOOGLE_DRIVE_FOLDER_ID=<your_folder_id> in .env"
+                )
+        
+        except json.JSONDecodeError as e:
+            error_msg = (
+                f"\n\n{'='*70}\n"
+                f"ERROR: Invalid JSON in credentials file!\n"
+                f"{'='*70}\n"
+                f"File: {credentials_path}\n"
+                f"Error: {e}\n\n"
+                f"The file is not valid JSON. Make sure you downloaded the\n"
+                f"SERVICE ACCOUNT key file (not OAuth client credentials).\n"
+                f"{'='*70}\n"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Authenticate
+        try:
             credentials = service_account.Credentials.from_service_account_file(
                 credentials_path,
                 scopes=self.SCOPES
             )
             
             self.service = build('drive', 'v3', credentials=credentials)
-            logger.info("Google Drive service authenticated successfully")
+            logger.info("✓ Google Drive authenticated successfully")
+            logger.info(f"   Service account: {creds_data.get('client_email')}")
+            if self.folder_id:
+                logger.info(f"   Target folder ID: {self.folder_id}")
             
         except Exception as e:
-            logger.error(f"Failed to authenticate with Google Drive: {e}")
+            error_msg = (
+                f"\n\n{'='*70}\n"
+                f"ERROR: Failed to authenticate with Google Drive!\n"
+                f"{'='*70}\n"
+                f"Error: {e}\n\n"
+                f"Make sure:\n"
+                f"1. Google Drive API is enabled in your project\n"
+                f"2. Service account has proper permissions\n"
+                f"3. The JSON key file is valid\n"
+                f"{'='*70}\n"
+            )
+            logger.error(error_msg)
             raise
     
     def upload_pdf_from_url(

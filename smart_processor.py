@@ -1,5 +1,5 @@
 # smart_processor.py
-# Pipeline: HTML scrape -> extract links from table -> upload freejobalert PDFs to Drive
+# Pipeline: HTML scrape -> extract links from table -> MUST upload freejobalert PDFs to Drive
 #           -> PDF text OR raw HTML text -> LLM -> merge -> blog -> Supabase
 
 import logging
@@ -7,6 +7,7 @@ import re
 from typing import Optional
 
 from gemma_processor import GemmaProcessor, extract_pdf_text
+from gdrive_uploader import GoogleDriveUploader
 
 logger = logging.getLogger("smart_processor")
 SEP = "=" * 60
@@ -21,11 +22,14 @@ class SmartJobProcessor:
 
     Pipeline:
       STEP 1  Extract link fields from HTML table (authoritative source)
-              - If PDF is hosted on freejobalert.com → upload to Google Drive (if available)
+              - If PDF is hosted on freejobalert.com → MUST upload to Google Drive
       STEP 2  If PDF found → extract PDF text; else use raw HTML text
       STEP 3  Send content to LLM for all non-link fields
       STEP 4  Merge: HTML links win, LLM fills everything else
       STEP 5  Generate 9000-char SEO blog
+    
+    Note: Google Drive upload is MANDATORY for freejobalert-hosted PDFs.
+          Jobs with freejobalert PDFs will be skipped if Drive unavailable.
     """
 
     def __init__(
@@ -35,17 +39,10 @@ class SmartJobProcessor:
     ):
         self.llm = GemmaProcessor(model=model, base_url=ollama_url)
         
-        # Try to initialize Google Drive uploader (optional)
-        self.gdrive_uploader = None
-        try:
-            from gdrive_uploader import GoogleDriveUploader
-            self.gdrive_uploader = GoogleDriveUploader()
-            logger.info("✓ Google Drive uploader initialized")
-        except ImportError:
-            logger.warning("⚠️  GoogleDriveUploader not available - freejobalert PDFs won't be uploaded to Drive")
-        except Exception as e:
-            logger.warning(f"⚠️  Google Drive authentication failed: {e}")
-            logger.warning("   Continuing without Drive upload - freejobalert PDFs will use original links")
+        # Initialize Google Drive uploader (REQUIRED)
+        # Will raise exception if credentials invalid/missing
+        self.gdrive_uploader = GoogleDriveUploader()
+        logger.info("✓ SmartJobProcessor initialized with Google Drive support")
 
     # -------------------------------------------------------------------------
     # Public entry point  (matches scraper.py call signature)
@@ -67,7 +64,9 @@ class SmartJobProcessor:
             details_url:   The article URL (stored as freejobalert_url).
 
         Returns:
-            Merged job dict ready for Supabase insertion, or None on failure.
+            Merged job dict ready for Supabase insertion, or None if:
+            - PDF is freejobalert-hosted AND Drive upload fails
+            - LLM extraction fails completely
         """
         if job_listing is None:
             job_listing = {}
@@ -77,30 +76,30 @@ class SmartJobProcessor:
         logger.info("STEP 1: Extracting ONLY links from HTML table...")
         html_links = _extract_links_from_html(html_content)
 
-        # Handle freejobalert-hosted PDFs → upload to Google Drive (if available)
+        # Handle freejobalert-hosted PDFs → MUST upload to Google Drive
         if html_links.get("pdf_url"):
             pdf_url = html_links["pdf_url"]
             logger.info(f"✓ PDF found: {pdf_url[:70]}...")
 
             if "freejobalert" in pdf_url.lower():
-                if self.gdrive_uploader:
-                    logger.info("   → PDF hosted on freejobalert.com, uploading to Google Drive...")
-                    try:
-                        job_title = job_listing.get("title", "Unknown Job")
-                        drive_link = self.gdrive_uploader.upload_pdf_from_url(
-                            pdf_url,
-                            job_title=job_title
-                        )
-                        if drive_link:
-                            logger.info(f"   ✓ Uploaded to Drive: {drive_link[:60]}...")
-                            html_links["pdf_url"] = drive_link  # Replace with Drive link
-                        else:
-                            logger.warning("   ⚠️  Drive upload failed, keeping original freejobalert link")
-                    except Exception as e:
-                        logger.error(f"   ❌ Drive upload error: {e}")
-                        # Keep original freejobalert link if upload fails
-                else:
-                    logger.info("   → PDF hosted on freejobalert.com (Drive upload unavailable, keeping original link)")
+                logger.info("   → PDF hosted on freejobalert.com (MUST upload to Google Drive)")
+                try:
+                    job_title = job_listing.get("title", "Unknown Job")
+                    drive_link = self.gdrive_uploader.upload_pdf_from_url(
+                        pdf_url,
+                        job_title=job_title
+                    )
+                    if drive_link:
+                        logger.info(f"   ✓ Uploaded to Drive: {drive_link[:60]}...")
+                        html_links["pdf_url"] = drive_link  # Replace with Drive link
+                    else:
+                        logger.error("   ❌ CRITICAL: Drive upload failed for freejobalert PDF")
+                        logger.error("   → Skipping this job (freejobalert PDFs MUST be on Drive)")
+                        return None  # Skip job if Drive upload fails
+                except Exception as e:
+                    logger.error(f"   ❌ CRITICAL: Drive upload error: {e}")
+                    logger.error("   → Skipping this job (freejobalert PDFs MUST be on Drive)")
+                    return None  # Skip job if Drive upload fails
             else:
                 logger.info("   → External PDF (not freejobalert), keeping original link")
         else:
