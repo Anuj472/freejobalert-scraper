@@ -31,24 +31,56 @@ class SupabaseClient:
     def _check_freejobalert_url_column(self):
         """Check if freejobalert_url column exists in jobs table."""
         try:
-            # Try to query with freejobalert_url field
             self.client.table('jobs').select('freejobalert_url').limit(1).execute()
             self.has_fja_url_column = True
-            logger.info("✓ freejobalert_url column exists")
+            logger.info("\u2713 freejobalert_url column exists")
         except Exception as e:
             self.has_fja_url_column = False
-            logger.warning("⚠️  freejobalert_url column not found - run MIGRATION_ADD_FJA_URL.sql to add it")
+            logger.warning("\u26a0\ufe0f  freejobalert_url column not found - run MIGRATION_ADD_FJA_URL.sql to add it")
             logger.info("   Deduplication will use job_url field (less reliable)")
-    
+
+    # -------------------------------------------------------------------------
+    # Slug uniqueness
+    # -------------------------------------------------------------------------
+
+    def _ensure_unique_slug(self, base_slug: str) -> str:
+        """
+        Return `base_slug` if no other job uses it, otherwise return
+        `base_slug-2`, `base_slug-3`, … until a free slot is found.
+
+        The primary slug (base_slug) matches exactly what the frontend's
+        createSlug() generates as a fallback, so most jobs will resolve
+        correctly even if job.slug is NULL in the DB.
+        """
+        slug = base_slug
+        counter = 2
+        while True:
+            try:
+                result = (
+                    self.client.table('jobs')
+                    .select('id')
+                    .eq('slug', slug)
+                    .execute()
+                )
+                if not result.data:          # slug is free
+                    return slug
+                # collision — try the next counter
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+                if counter > 99:             # safety valve
+                    logger.warning(f"Slug collision limit reached for: {base_slug}")
+                    return slug
+            except Exception as exc:
+                logger.warning(f"Slug uniqueness check failed ({exc}), using base slug")
+                return base_slug
+
+    # -------------------------------------------------------------------------
+    # Helpers
+    # -------------------------------------------------------------------------
+
     def get_jobs_with_null_slugs(self, limit: int = 100) -> List[Dict]:
         """
         Get jobs that have NULL slugs and need slug generation.
-        
-        Args:
-            limit: Maximum number of jobs to return
-        
-        Returns:
-            List of job records with null slugs
         """
         try:
             result = self.client.table('jobs') \
@@ -67,13 +99,6 @@ class SupabaseClient:
     def update_slug(self, job_id: str, slug: str) -> bool:
         """
         Update the slug for a specific job.
-        
-        Args:
-            job_id: UUID of the job record
-            slug: Generated slug
-        
-        Returns:
-            True if update successful, False otherwise
         """
         try:
             if not validate_slug(slug):
@@ -86,7 +111,7 @@ class SupabaseClient:
                 .execute()
             
             if result.data:
-                logger.info(f"✓ Slug updated for job {job_id}: {slug}")
+                logger.info(f"\u2713 Slug updated for job {job_id}: {slug}")
                 return True
             return False
         except Exception as e:
@@ -99,25 +124,21 @@ class SupabaseClient:
             return None
         
         try:
-            # Try DD-MM-YYYY format
             if '-' in date_str:
                 parts = date_str.strip().split('-')
                 if len(parts) == 3:
                     day, month, year = parts
                     return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
             
-            # Try DD/MM/YYYY format
             elif '/' in date_str:
                 parts = date_str.strip().split('/')
                 if len(parts) == 3:
                     day, month, year = parts
                     return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
             
-            # Try YYYY-MM-DD (already correct)
             elif re.match(r'^\d{4}-\d{2}-\d{2}$', date_str.strip()):
                 return date_str.strip()
             
-            # If all else fails, return None
             logger.warning(f"Could not parse date: {date_str}")
             return None
             
@@ -129,8 +150,6 @@ class SupabaseClient:
         """Extract number from vacancy string like '260 Posts' or '01 Posts'."""
         if not vacancies_str:
             return None
-        
-        # Extract numbers from string
         numbers = re.findall(r'\d+', str(vacancies_str))
         if numbers:
             try:
@@ -148,17 +167,14 @@ class SupabaseClient:
     def job_exists(self, fja_url: str) -> bool:
         """Check if a job already exists by FreeJobAlert source URL."""
         try:
-            # Try to check by freejobalert_url field (if column exists)
             if self.has_fja_url_column:
                 try:
                     result = self.client.table('jobs').select('id').eq('freejobalert_url', fja_url).execute()
                     if len(result.data) > 0:
                         return True
                 except Exception:
-                    # Column check failed, skip
                     pass
             
-            # Fallback: check by job_url if it's a FreeJobAlert URL (old records or no fja_url column)
             if self._is_freejobalert_url(fja_url):
                 result = self.client.table('jobs').select('id').eq('job_url', fja_url).execute()
                 return len(result.data) > 0
@@ -172,32 +188,27 @@ class SupabaseClient:
         """Insert a new job into the database.
         
         CRITICAL: job_url must be Apply Online link, never FreeJobAlert URL.
-        SLUG: Generated deterministically from title + organization + freejobalert_url.
+        SLUG: Generated to exactly match frontend createSlug() in JobCard.tsx.
+              Uniqueness ensured via DB check + numeric counter (not hash suffix).
         """
         try:
-            # Get source URL (FreeJobAlert article page)
             fja_url = job_data.get('freejobalert_url') or job_data.get('details_url')
             
             if not fja_url:
                 logger.error("Job data missing FreeJobAlert source URL")
                 return None
             
-            # Check if job already exists using FreeJobAlert URL
             if self.job_exists(fja_url):
                 logger.info(f"Job already exists: {job_data.get('title')}")
                 return None
             
-            # Parse dates to proper format
             post_date = self._parse_date(job_data.get('post_date'))
             last_date = self._parse_date(job_data.get('last_date'))
             
-            # Extract vacancies count - use parser's value if available, else parse from title
-            vacancies = job_data.get('vacancies')  # Use parser's value first
+            vacancies = job_data.get('vacancies')
             if vacancies is None and job_data.get('title'):
-                # Only parse from title if parser didn't extract it
                 vacancies = self._parse_vacancies(job_data['title'])
             
-            # Build insert data with all schema fields
             insert_data = {
                 'title': job_data.get('title'),
                 'organization': job_data.get('organization'),
@@ -206,94 +217,82 @@ class SupabaseClient:
                 'advt_no': job_data.get('advt_no'),
             }
             
-            # Generate slug from title + organization + freejobalert_url (for uniqueness)
+            # ── Slug generation ──────────────────────────────────────────────
+            # generate_slug() now mirrors the frontend createSlug() exactly.
+            # _ensure_unique_slug() adds -2 / -3 counters only when needed,
+            # so the base slug always matches the frontend fallback.
             title = job_data.get('title')
-            org = job_data.get('organization')
+            org   = job_data.get('organization')
             if title and org:
-                slug = generate_slug(title, org, fja_url)
-                if slug:
+                base_slug = generate_slug(title, org)        # no hash suffix
+                if base_slug:
+                    slug = self._ensure_unique_slug(base_slug)
                     insert_data['slug'] = slug
-                    logger.info(f"✓ Generated slug: {slug}")
+                    logger.info(f"\u2713 Generated slug: {slug}")
                 else:
                     logger.warning("Failed to generate slug")
             else:
-                logger.warning(f"Missing title or org for slug generation: title={bool(title)}, org={bool(org)}")
+                logger.warning(
+                    f"Missing title or org for slug generation: "
+                    f"title={bool(title)}, org={bool(org)}"
+                )
             
-            # CRITICAL: job_url is Apply Online link from parser (can be NULL)
-            job_url = job_data.get('job_url')  # From parser extraction
-            
+            # ── Apply Online URL ─────────────────────────────────────────────
+            job_url = job_data.get('job_url')
             if job_url:
-                # Verify it's not a FreeJobAlert link (should never happen but double-check)
                 if self._is_freejobalert_url(job_url):
-                    logger.error(f"🚨 CRITICAL: job_url contains FreeJobAlert link! This should not happen: {job_url[:70]}")
-                    job_url = None  # Reject it
+                    logger.error(f"\U0001f6a8 CRITICAL: job_url contains FreeJobAlert link! {job_url[:70]}")
+                    job_url = None
                 else:
                     insert_data['job_url'] = job_url
-                    logger.info(f"✓ Apply Online link: {job_url[:70]}...")
+                    logger.info(f"\u2713 Apply Online link: {job_url[:70]}...")
             else:
-                # NULL is acceptable if no Apply Online link found
-                logger.info("⚠️  No Apply Online link found - job_url will be NULL")
+                logger.info("\u26a0\ufe0f  No Apply Online link found - job_url will be NULL")
             
-            # Store FreeJobAlert source URL for tracking (ONLY if column exists)
             if self.has_fja_url_column:
                 insert_data['freejobalert_url'] = fja_url
                 logger.debug(f"FreeJobAlert source: {fja_url[:70]}...")
             
-            # Add dates
             if post_date:
                 insert_data['post_date'] = post_date
             if last_date:
                 insert_data['last_date'] = last_date
             
-            # Add vacancies count
             if vacancies:
                 insert_data['vacancies'] = vacancies
             
-            # Location
             if job_data.get('location'):
                 insert_data['location'] = job_data.get('location')
             
-            # PDF URL - Can be organization PDF OR Google Drive link (uploaded FreeJobAlert PDFs)
             pdf_url = job_data.get('pdf_url') or job_data.get('official_notification_pdf')
             if pdf_url:
-                # Double-check not FreeJobAlert (should already be handled, but verify)
                 if self._is_freejobalert_url(pdf_url):
-                    logger.warning(f"🚨 Rejected FreeJobAlert PDF URL: {pdf_url[:70]}")
+                    logger.warning(f"\U0001f6a8 Rejected FreeJobAlert PDF URL: {pdf_url[:70]}")
                 else:
                     insert_data['pdf_url'] = pdf_url
-                    # Log whether it's a Google Drive link or external PDF
                     pdf_source = "Google Drive" if 'drive.google.com' in pdf_url else "Organization"
                     logger.debug(f"PDF URL ({pdf_source}): {pdf_url[:70]}...")
             
-            # Official website - Only official organization websites (never FreeJobAlert)
             official_website = job_data.get('official_website')
             if official_website:
-                # Double-check not FreeJobAlert
                 if self._is_freejobalert_url(official_website):
-                    logger.warning(f"🚨 Rejected FreeJobAlert official_website: {official_website[:70]}")
+                    logger.warning(f"\U0001f6a8 Rejected FreeJobAlert official_website: {official_website[:70]}")
                 else:
                     insert_data['official_website'] = official_website
             
-            # Text fields
             if job_data.get('full_description'):
                 insert_data['full_description'] = job_data.get('full_description')
-            
             if job_data.get('salary'):
                 insert_data['salary'] = job_data.get('salary')
-            
             if job_data.get('age_limit'):
                 insert_data['age_limit'] = job_data.get('age_limit')
-            
             if job_data.get('application_fee'):
                 insert_data['application_fee'] = job_data.get('application_fee')
-            
             if job_data.get('selection_process'):
                 insert_data['selection_process'] = job_data.get('selection_process')
-            
             if job_data.get('how_to_apply'):
                 insert_data['how_to_apply'] = job_data.get('how_to_apply')
             
-            # JSON fields
             if job_data.get('important_dates'):
                 important_dates = job_data.get('important_dates')
                 if isinstance(important_dates, dict) and important_dates:
@@ -304,49 +303,34 @@ class SupabaseClient:
                 if isinstance(vacancy_details, dict) and vacancy_details:
                     insert_data['vacancy_details'] = json.dumps(vacancy_details)
             
-            # ===== BLOG-RELATED FIELDS (Gemma 3 Generated Content) =====
-            
-            # SEO title and meta description
             if job_data.get('seo_title'):
                 insert_data['seo_title'] = job_data.get('seo_title')
-            
             if job_data.get('meta_description'):
                 insert_data['meta_description'] = job_data.get('meta_description')
-            
-            # Full blog article in markdown
             if job_data.get('blog_article'):
                 insert_data['blog_article'] = job_data.get('blog_article')
             
-            # Highlights array (stored as JSONB)
             if job_data.get('highlights'):
                 highlights = job_data.get('highlights')
                 if isinstance(highlights, list) and highlights:
                     insert_data['highlights'] = json.dumps(highlights)
             
-            # FAQs array (stored as JSONB)
             if job_data.get('faqs'):
                 faqs = job_data.get('faqs')
                 if isinstance(faqs, list) and faqs:
                     insert_data['faqs'] = json.dumps(faqs)
             
-            # Data source indicator (pdf_gemma3 or html_css)
             if job_data.get('data_source'):
                 insert_data['data_source'] = job_data.get('data_source')
             
-            # Remove None values
             insert_data = {k: v for k, v in insert_data.items() if v is not None}
             
-            # Log what we're inserting for debugging
-            logger.debug(f"Inserting job with {len(insert_data)} fields")
-            
-            # Log blog content status
             if insert_data.get('blog_article'):
                 blog_len = len(insert_data['blog_article'])
-                logger.info(f"✓ Blog content included ({blog_len} chars)")
+                logger.info(f"\u2713 Blog content included ({blog_len} chars)")
                 if insert_data.get('data_source'):
                     logger.info(f"   Data source: {insert_data['data_source']}")
             
-            # Insert into database
             result = self.client.table('jobs').insert(insert_data).execute()
             
             if result.data:
@@ -373,13 +357,7 @@ class SupabaseClient:
             return None
     
     def update_job(self, job_identifier: str, update_data: Dict, by_fja_url: bool = False) -> Optional[Dict]:
-        """Update an existing job in the database.
-        
-        Args:
-            job_identifier: job_url or freejobalert_url depending on by_fja_url flag
-            update_data: Dictionary of fields to update
-            by_fja_url: If True, search by freejobalert_url field, else by job_url
-        """
+        """Update an existing job in the database."""
         try:
             if by_fja_url and self.has_fja_url_column:
                 result = self.client.table('jobs').update(update_data).eq('freejobalert_url', job_identifier).execute()
@@ -400,12 +378,10 @@ class SupabaseClient:
     def batch_insert_jobs(self, jobs: List[Dict]) -> int:
         """Insert multiple jobs in batch."""
         inserted_count = 0
-        
         for job in jobs:
             result = self.insert_job(job)
             if result:
                 inserted_count += 1
-        
         logger.info(f"Batch insert complete: {inserted_count}/{len(jobs)} jobs inserted")
         return inserted_count
     
@@ -417,7 +393,6 @@ class SupabaseClient:
                 .order('scraped_at', desc=True) \
                 .limit(limit) \
                 .execute()
-            
             return result.data if result.data else []
         except Exception as e:
             logger.error(f"Error fetching recent jobs: {e}")

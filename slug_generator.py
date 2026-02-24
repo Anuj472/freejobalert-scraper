@@ -1,101 +1,101 @@
-"""Generate deterministic slugs for job postings.
+"""Generate URL-friendly slugs for job postings.
 
-Slug format: <job_title>-<organization>-<random_suffix>
-Example: assistant-professor-iit-delhi-abc123
+CRITICAL: The algorithm here MUST stay in sync with createSlug() in
+          freegovtjobinfo2 / components/JobCard.tsx.
+
+Frontend reference (JobCard.tsx):
+
+    const createSlug = (title: string, organization: string): string => {
+      const combined = `${title} ${organization}`
+        .toLowerCase()
+        .replace(/[^a-z0-9\\s-]/g, '')   // remove special chars
+        .replace(/\\s+/g, '-')            // spaces  → hyphens
+        .replace(/-+/g, '-')             // multiple hyphens → single
+        .trim()
+        .substring(0, 150);              // 150-char max
+      return combined;
+    };
+
+    // usage: job.slug || createSlug(job.title, job.organization)
+
+Why this matters
+----------------
+The frontend uses `job.slug` from the DB first.  When that is NULL (e.g.
+legacy records), it falls back to createSlug() and then does:
+
+    supabase.from('jobs').select('*').eq('slug', slug).single()
+
+If the DB slug was generated with a different algorithm (e.g. a hash suffix)
+the fallback URL will never resolve — the page returns 404.
+
+Uniqueness strategy
+-------------------
+Instead of a deterministic hash suffix (which the frontend can’t reproduce),
+uniqueness is handled by the caller (supabase_client._ensure_unique_slug):
+  • Base slug is tried first   →  matches createSlug() exactly
+  • If already taken           →  append -2, -3, …
+This keeps the primary slug identical to what the frontend generates.
 """
 
 import re
-import hashlib
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 def generate_slug(job_title: str, organization: str, job_id: str = None) -> str:
     """
-    Generate a deterministic URL-friendly slug from job title and organization.
-    
+    Generate a URL slug that exactly matches the frontend’s createSlug().
+
     Args:
-        job_title: Job title/post name
-        organization: Organization/recruitment board name
-        job_id: Optional unique job identifier for hash (e.g., UUID or details_url)
-    
+        job_title    : Job title string.
+        organization : Organization name string.
+        job_id       : Accepted for backward-compatibility but ignored.
+                       Uniqueness is handled by supabase_client._ensure_unique_slug().
+
     Returns:
-        URL-safe slug string
+        Slug string (max 150 chars), or None if inputs are missing.
     """
     if not job_title or not organization:
         logger.warning("Cannot generate slug: missing job_title or organization")
         return None
-    
-    # Clean and normalize title
-    title_clean = _slugify(job_title)
-    
-    # Clean and normalize organization
-    org_clean = _slugify(organization)
-    
-    # Combine title + org
-    base_slug = f"{title_clean}-{org_clean}"
-    
-    # Add deterministic suffix based on job_id to ensure uniqueness
-    if job_id:
-        # Use first 6 chars of SHA256 hash for deterministic suffix
-        hash_obj = hashlib.sha256(job_id.encode('utf-8'))
-        suffix = hash_obj.hexdigest()[:6]
-        base_slug = f"{base_slug}-{suffix}"
-    
-    # Truncate if too long (max 100 chars recommended for URLs)
-    if len(base_slug) > 100:
-        base_slug = base_slug[:100]
-    
-    # Remove trailing hyphens
-    base_slug = base_slug.rstrip('-')
-    
-    return base_slug
 
-def _slugify(text: str) -> str:
-    """
-    Convert text to URL-friendly slug.
-    
-    Steps:
-    1. Convert to lowercase
-    2. Remove special characters
-    3. Replace spaces with hyphens
-    4. Remove consecutive hyphens
-    """
-    # Convert to lowercase
-    text = text.lower()
-    
-    # Remove content in parentheses (e.g., "IIT (Indian Institute of Technology)" -> "IIT")
-    text = re.sub(r'\([^)]*\)', '', text)
-    
-    # Remove special characters except spaces and hyphens
-    text = re.sub(r'[^a-z0-9\s-]', '', text)
-    
-    # Replace multiple spaces with single space
-    text = re.sub(r'\s+', ' ', text)
-    
-    # Replace spaces with hyphens
-    text = text.replace(' ', '-')
-    
-    # Remove consecutive hyphens
-    text = re.sub(r'-+', '-', text)
-    
-    # Strip leading/trailing hyphens
-    text = text.strip('-')
-    
-    return text
+    # Step 1: combine exactly as frontend does
+    combined = f"{job_title} {organization}"
+
+    # Step 2: lowercase
+    combined = combined.lower()
+
+    # Step 3: remove everything except a-z, 0-9, spaces, hyphens
+    #         (mirrors JS: .replace(/[^a-z0-9\s-]/g, ''))
+    combined = re.sub(r'[^a-z0-9\s-]', '', combined)
+
+    # Step 4: one or more whitespace chars → single hyphen
+    #         (mirrors JS: .replace(/\s+/g, '-'))
+    combined = re.sub(r'\s+', '-', combined)
+
+    # Step 5: collapse multiple consecutive hyphens
+    #         (mirrors JS: .replace(/-+/g, '-'))
+    combined = re.sub(r'-+', '-', combined)
+
+    # Step 6: trim leading / trailing hyphens
+    #         (mirrors JS: .trim()  — JS trim only removes whitespace, but
+    #          after step 3-4 leading/trailing chars can only be hyphens)
+    combined = combined.strip('-')
+
+    # Step 7: max 150 chars  (mirrors JS: .substring(0, 150))
+    combined = combined[:150]
+
+    return combined if combined else None
+
 
 def validate_slug(slug: str) -> bool:
     """
-    Validate if a slug is properly formatted.
-    
-    Valid slug:
-    - Contains only lowercase letters, numbers, and hyphens
-    - No consecutive hyphens
-    - No leading/trailing hyphens
+    Validate that a slug is properly formatted.
+
+    Valid slug: lowercase letters, digits, and hyphens only;
+    no leading/trailing hyphens; no consecutive hyphens.
     """
     if not slug:
         return False
-    
-    # Check format
-    pattern = r'^[a-z0-9]+(-[a-z0-9]+)*$'
-    return bool(re.match(pattern, slug))
+    return bool(re.match(r'^[a-z0-9]+(-[a-z0-9]+)*$', slug))
