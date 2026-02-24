@@ -14,7 +14,7 @@ from typing import Optional
 logger = logging.getLogger("gemma_processor")
 
 
-# ─── JSON REPAIR ────────────────────────────────────────────────────────────────
+# ─── JSON REPAIR ────────────────────────────────────────────────────────────────────────────────
 
 def _repair_json(raw: str) -> Optional[dict]:
     """Progressively try to parse / repair LLM JSON output."""
@@ -54,23 +54,32 @@ def _repair_json(raw: str) -> Optional[dict]:
     return None
 
 
-# ─── PDF TEXT EXTRACTION (no poppler, no images) ────────────────────────────────
+# ─── PDF TEXT EXTRACTION (no poppler, no images) ────────────────────────────────────────────
 
 def extract_pdf_text(
     pdf_url: str,
-    max_pages: int = 5,
-    max_chars: int = 8000,
+    max_pages: int = 10,       # raised from 5 → cover longer notifications
+    max_chars: int = 0,        # 0 = no cap, pass the full document to the LLM
 ) -> Optional[str]:
     """
-    Download a PDF and extract its text.
+    Download a PDF and extract its full text.
+
     Primary:  pdfplumber  (pure-Python, no poppler needed)
     Fallback: pymupdf / fitz
-    Returns extracted text string, or None if the PDF is image-only / unreadable.
+
+    Args:
+        pdf_url   : Direct URL to the PDF file.
+        max_pages : Maximum number of PDF pages to read (default 10).
+        max_chars : If > 0, truncate output to this many characters.
+                    Default is 0 (no truncation — full document passed to LLM).
+
+    Returns:
+        Extracted text string, or None if the PDF is image-only / unreadable.
     """
     for attempt in range(2):
         try:
             logger.info(f"Downloading PDF from: {pdf_url[:80]}...")
-            resp = httpx.get(pdf_url, timeout=30, follow_redirects=True)
+            resp = httpx.get(pdf_url, timeout=60, follow_redirects=True)
             resp.raise_for_status()
             pdf_bytes = resp.content
             size_mb = len(pdf_bytes) / 1024 / 1024
@@ -88,11 +97,21 @@ def extract_pdf_text(
                 logger.warning("\u26a0\ufe0f  PDF has no extractable text (scanned / image-only PDF)")
                 return None
 
-            trimmed = text[:max_chars]
-            logger.info(
-                f"\u2713 PDF text extracted: {len(trimmed)} chars "
-                f"(total raw: {len(text)} chars)"
-            )
+            raw_len = len(text)
+
+            # Only truncate if an explicit cap was requested
+            if max_chars and max_chars > 0:
+                trimmed = text[:max_chars]
+                logger.info(
+                    f"\u2713 PDF text extracted: {len(trimmed)} chars "
+                    f"(total raw: {raw_len} chars, capped at {max_chars})"
+                )
+            else:
+                trimmed = text
+                logger.info(
+                    f"\u2713 PDF text extracted: {raw_len} chars (full document, no cap)"
+                )
+
             return trimmed
 
         except Exception as exc:
@@ -133,7 +152,7 @@ def _extract_with_pymupdf(pdf_bytes: bytes, max_pages: int) -> Optional[str]:
         return None
 
 
-# ─── GEMMA PROCESSOR ────────────────────────────────────────────────────────────
+# ─── GEMMA PROCESSOR ──────────────────────────────────────────────────────────────────────────────
 
 class GemmaProcessor:
     """
@@ -208,7 +227,8 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         self,
         prompt: str,
         temperature: float = 0.2,
-        num_ctx: int = 16384,
+        num_ctx: int = 32768,    # raised from 16384 → fits full PDF + prompt
+        timeout: int = 180,      # default 180s; blog calls pass 360s
     ) -> Optional[str]:
         """Send a prompt to Ollama and return the response text."""
         try:
@@ -223,7 +243,7 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
                         "num_ctx": num_ctx,
                     },
                 },
-                timeout=120,
+                timeout=timeout,
             )
             resp.raise_for_status()
             return resp.json().get("response", "").strip()
@@ -236,12 +256,18 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         content: str,
         content_label: str = "HTML Text",
     ) -> Optional[dict]:
-        """Extract structured job fields from HTML text or PDF text."""
+        """
+        Extract structured job fields from HTML text or PDF text.
+
+        The full content is passed to the LLM — no character truncation.
+        A 32 K context window comfortably holds the longest government
+        notification PDFs (~15–20 K chars) plus the extraction prompt.
+        """
         prompt = self.EXTRACT_PROMPT.format(
             content_label=content_label,
-            content=content[:8000],
+            content=content,          # NO truncation — full document
         )
-        raw = self._call_ollama(prompt, temperature=0.1)
+        raw = self._call_ollama(prompt, temperature=0.1, num_ctx=32768, timeout=180)
         if not raw:
             return None
 
@@ -255,11 +281,19 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         return result
 
     def generate_blog(self, job_data: dict) -> Optional[str]:
-        """Generate a 9000+ character SEO blog post for the job."""
+        """
+        Generate a 9000+ character SEO blog post for the job.
+
+        Uses a 360 s timeout and 32 K context to avoid timeouts on
+        long-form generation.
+        """
         job_summary = json.dumps(job_data, ensure_ascii=False, indent=2)
         prompt = self.BLOG_PROMPT.format(job_data=job_summary[:3000])
 
-        blog = self._call_ollama(prompt, temperature=0.7, num_ctx=32768)
+        # 360 s timeout for long blog generation
+        blog = self._call_ollama(
+            prompt, temperature=0.7, num_ctx=32768, timeout=360
+        )
         if not blog:
             return None
 
@@ -280,7 +314,9 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
                 f"Current blog:\n{blog}\n\n"
                 f"Expanded blog (must be 9000+ characters):"
             )
-            expanded = self._call_ollama(expand_prompt, temperature=0.6, num_ctx=32768)
+            expanded = self._call_ollama(
+                expand_prompt, temperature=0.6, num_ctx=32768, timeout=360
+            )
             if expanded and len(expanded) > len(blog):
                 logger.info(f"\u2713 Blog expanded to {len(expanded)} chars")
                 return expanded
