@@ -9,9 +9,24 @@ import json
 import time
 import httpx
 import logging
+import requests
 from typing import Optional
 
 logger = logging.getLogger("gemma_processor")
+
+# Browser-like headers that Indian government servers accept
+_PDF_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/pdf,application/octet-stream,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 
 # ─── JSON REPAIR ────────────────────────────────────────────────────────────────────────────────
@@ -58,11 +73,16 @@ def _repair_json(raw: str) -> Optional[dict]:
 
 def extract_pdf_text(
     pdf_url: str,
-    max_pages: int = 10,       # raised from 5 → cover longer notifications
-    max_chars: int = 0,        # 0 = no cap, pass the full document to the LLM
+    max_pages: int = 10,
+    max_chars: int = 0,
+    referer: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Download a PDF and extract its full text.
+    Download a PDF with browser-like headers and extract its full text.
+
+    Uses the `requests` library (HTTP/1.1) instead of httpx so that Indian
+    government servers (e.g. indianrailways.gov.in) do not refuse the
+    connection with ECONNREFUSED.
 
     Primary:  pdfplumber  (pure-Python, no poppler needed)
     Fallback: pymupdf / fitz
@@ -72,16 +92,35 @@ def extract_pdf_text(
         max_pages : Maximum number of PDF pages to read (default 10).
         max_chars : If > 0, truncate output to this many characters.
                     Default is 0 (no truncation — full document passed to LLM).
+        referer   : URL to send as the Referer header.  Pass the FreeJobAlert
+                    article URL so government servers accept the request.
 
     Returns:
         Extracted text string, or None if the PDF is image-only / unreadable.
     """
+    # Build headers — add Referer if supplied
+    headers = dict(_PDF_HEADERS)
+    if referer:
+        headers["Referer"] = referer
+    else:
+        headers["Referer"] = "https://www.freejobalert.com/"
+
     for attempt in range(2):
         try:
             logger.info(f"Downloading PDF from: {pdf_url[:80]}...")
-            resp = httpx.get(pdf_url, timeout=60, follow_redirects=True)
+
+            # Use requests (HTTP/1.1) — httpx HTTP/2 causes ECONNREFUSED on
+            # many Indian government servers.
+            resp = requests.get(
+                pdf_url,
+                headers=headers,
+                timeout=60,
+                allow_redirects=True,
+                verify=False,          # many .gov.in sites have cert issues
+            )
             resp.raise_for_status()
             pdf_bytes = resp.content
+
             size_mb = len(pdf_bytes) / 1024 / 1024
             logger.info(f"\u2713 PDF downloaded: {size_mb:.2f} MB")
 
@@ -94,7 +133,9 @@ def extract_pdf_text(
                 text = _extract_with_pymupdf(pdf_bytes, max_pages)
 
             if not text or not text.strip():
-                logger.warning("\u26a0\ufe0f  PDF has no extractable text (scanned / image-only PDF)")
+                logger.warning(
+                    "\u26a0\ufe0f  PDF has no extractable text (scanned / image-only PDF)"
+                )
                 return None
 
             raw_len = len(text)
@@ -113,6 +154,12 @@ def extract_pdf_text(
                 )
 
             return trimmed
+
+        except requests.exceptions.SSLError as ssl_err:
+            logger.warning(f"SSL error (attempt {attempt+1}): {ssl_err} — retrying without verify")
+            # Already verify=False, so if we hit this it's a different TLS issue
+            if attempt == 0:
+                time.sleep(1)
 
         except Exception as exc:
             logger.error(f"\u274c PDF attempt {attempt + 1} failed: {exc}")
@@ -227,8 +274,8 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         self,
         prompt: str,
         temperature: float = 0.2,
-        num_ctx: int = 32768,    # raised from 16384 → fits full PDF + prompt
-        timeout: int = 180,      # default 180s; blog calls pass 360s
+        num_ctx: int = 32768,
+        timeout: int = 180,
     ) -> Optional[str]:
         """Send a prompt to Ollama and return the response text."""
         try:
@@ -258,14 +305,11 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
     ) -> Optional[dict]:
         """
         Extract structured job fields from HTML text or PDF text.
-
-        The full content is passed to the LLM — no character truncation.
-        A 32 K context window comfortably holds the longest government
-        notification PDFs (~15–20 K chars) plus the extraction prompt.
+        Full content is passed — no truncation.
         """
         prompt = self.EXTRACT_PROMPT.format(
             content_label=content_label,
-            content=content,          # NO truncation — full document
+            content=content,
         )
         raw = self._call_ollama(prompt, temperature=0.1, num_ctx=32768, timeout=180)
         if not raw:
@@ -281,16 +325,10 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
         return result
 
     def generate_blog(self, job_data: dict) -> Optional[str]:
-        """
-        Generate a 9000+ character SEO blog post for the job.
-
-        Uses a 360 s timeout and 32 K context to avoid timeouts on
-        long-form generation.
-        """
+        """Generate a 9000+ character SEO blog post. Uses 360 s timeout."""
         job_summary = json.dumps(job_data, ensure_ascii=False, indent=2)
         prompt = self.BLOG_PROMPT.format(job_data=job_summary[:3000])
 
-        # 360 s timeout for long blog generation
         blog = self._call_ollama(
             prompt, temperature=0.7, num_ctx=32768, timeout=360
         )
@@ -299,7 +337,6 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
 
         logger.info(f"\u2713 Blog generated ({len(blog)} chars)")
 
-        # Auto-expand if below threshold
         if len(blog) < 6000:
             logger.warning(
                 f"\u26a0\ufe0f  Blog too short ({len(blog)} chars) — requesting expansion..."
