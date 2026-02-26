@@ -313,7 +313,47 @@ def _extract_links_from_html(html: str) -> dict:
                             links["official_website"] = href
                             break
 
-    # Fallback: scan ALL <a> tags for any links still missing
+    # ── Structure 2: <ul><li><strong>Label</strong>: <a href="...">...</a></li></ul> ──
+    # FreeJobAlert also uses this structure (e.g. "MRVC Important Links" section)
+    if not links["apply_url"] or not links["pdf_url"] or not links["official_website"]:
+        for li in soup.find_all("li"):
+            strong = li.find("strong")
+            if not strong:
+                continue
+
+            label_text = strong.get_text(strip=True).lower().rstrip(":").strip()
+            link_tag = li.find("a", href=True)
+            if not link_tag:
+                continue
+
+            href = link_tag["href"].strip()
+            if not href or href.startswith("#") or href.startswith("javascript"):
+                continue
+
+            if not links["pdf_url"]:
+                for pattern in pdf_labels:
+                    if pattern in label_text:
+                        links["pdf_url"] = href
+                        logger.info(f"✓ PDF found (li/strong): {href[:70]}...")
+                        break
+
+            if not links["apply_url"]:
+                for pattern in apply_labels:
+                    if pattern in label_text:
+                        resolved = _resolve_apply_url(href)
+                        if resolved:
+                            links["apply_url"] = resolved
+                            logger.info(f"✓ Apply Online (li/strong): {resolved[:70]}...")
+                        break
+
+            if not links["official_website"]:
+                for pattern in website_labels:
+                    if pattern in label_text:
+                        links["official_website"] = href
+                        logger.info(f"✓ Official website (li/strong): {href[:70]}...")
+                        break
+
+    # ── Fallback: scan ALL <a> tags for any links still missing ──────────────
     if not links["apply_url"] or not links["pdf_url"] or not links["official_website"]:
         logger.debug("Scanning all <a> tags for missing links...")
         apply_re    = re.compile(r'apply[\s_-]?(online|now)|register\s*(now|here)?|click\s*here', re.I)
@@ -341,47 +381,22 @@ def _extract_links_from_html(html: str) -> dict:
 
 def _resolve_apply_url(href: str) -> Optional[str]:
     """
-    Resolve an apply URL to the final destination.
+    Validate an apply or official website URL.
 
-    FreeJobAlert wraps apply links in their own redirect (e.g.
-    https://www.freejobalert.com/go/org-name) to track clicks.
-    We follow the redirect (one hop) to retrieve the real apply URL.
-    If this is already a direct external link we return it as-is.
-    If it's a freejobalert non-redirect (article/category page) we skip it.
+    Apply Online and Official Website links on FreeJobAlert pages are ALWAYS
+    direct external URLs — they are never freejobalert.com intermediate
+    redirects. So we simply accept external links and reject any
+    freejobalert.com URL (which is a page link, not an apply/official link).
     """
     if not href or not href.startswith("http"):
         return None
 
-    href_lower = href.lower()
-
-    # Not a freejobalert link — return as-is
-    if "freejobalert" not in href_lower:
+    # Not a freejobalert link at all — always a valid external link
+    if "freejobalert" not in href.lower():
         return href
 
-    # FreeJobAlert article/listing pages — not an apply link
-    blocked_paths = ["/articles/", "/category/", "/view-all/", "/tag/",
-                     "freejobalert.com/#", "freejobalert.com/page/"]
-    if any(p in href_lower for p in blocked_paths):
-        return None
-
-    # FreeJobAlert redirect/tracking link — follow it once
-    try:
-        import requests as _req
-        resp = _req.get(
-            href,
-            allow_redirects=True,
-            timeout=8,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        final_url = resp.url
-        if "freejobalert" not in final_url.lower():
-            logger.debug(f"Redirect resolved: {href[:50]} → {final_url[:60]}")
-            return final_url
-        # Still on freejobalert after redirect — not a real apply URL
-        return None
-    except Exception as exc:
-        logger.debug(f"Could not follow redirect {href[:50]}: {exc}")
-        return None
+    # Any freejobalert.com URL == not a real apply/official link
+    return None
 
 
 def _extract_raw_text(html: str) -> str:
