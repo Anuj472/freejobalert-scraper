@@ -81,23 +81,21 @@ class SmartJobProcessor:
             logger.info(f"\u2713 PDF found: {pdf_url[:70]}...")
 
             if "freejobalert" in pdf_url.lower():
-                logger.info("   \u2192 PDF hosted on freejobalert.com (MUST upload to Google Drive)")
+                logger.info("   → PDF hosted on freejobalert.com — downloading and uploading to Google Drive...")
                 try:
                     job_title = job_listing.get("title", "Unknown Job")
                     drive_link = self.gdrive_uploader.upload_pdf_from_url(
                         pdf_url, job_title=job_title
                     )
                     if drive_link:
-                        logger.info(f"   \u2713 Uploaded to Drive: {drive_link[:60]}...")
+                        logger.info(f"   ✓ Uploaded to Drive: {drive_link[:60]}...")
                         html_links["pdf_url"] = drive_link
                     else:
-                        logger.error("   \u274c CRITICAL: Drive upload failed for freejobalert PDF")
-                        logger.error("   \u2192 Skipping this job (freejobalert PDFs MUST be on Drive)")
-                        return None
+                        logger.warning("   ⚠️  Drive upload failed — job will be saved without pdf_url")
+                        html_links["pdf_url"] = None
                 except Exception as e:
-                    logger.error(f"   \u274c CRITICAL: Drive upload error: {e}")
-                    logger.error("   \u2192 Skipping this job (freejobalert PDFs MUST be on Drive)")
-                    return None
+                    logger.warning(f"   ⚠️  Drive upload error: {e} — job will be saved without pdf_url")
+                    html_links["pdf_url"] = None
             else:
                 logger.info("   \u2192 External PDF (not freejobalert), keeping original link")
         else:
@@ -146,7 +144,15 @@ class SmartJobProcessor:
             llm_content = _extract_raw_text(html_content)
             logger.info(f"Raw text length: {len(llm_content)} chars")
 
-        # ── STEP 3: LLM field extraction ────────────────────────────────────────
+        # ── STEP 3: Sanitize content before LLM (strip all freejobalert refs) ─
+        logger.info(SEP)
+        original_len = len(llm_content)
+        llm_content = _sanitize_for_llm(llm_content)
+        stripped = original_len - len(llm_content)
+        if stripped > 0:
+            logger.info(f"✓ Sanitized content: removed {stripped} chars of freejobalert references")
+
+        # ── STEP 4 (old 3): LLM field extraction ────────────────────────────────
         logger.info(SEP)
         llm_fields = self.llm.extract_fields(llm_content, content_label)
 
@@ -193,13 +199,44 @@ class SmartJobProcessor:
 
         # ── STEP 5: SEO blog generation ─────────────────────────────────────────
         logger.info(SEP)
-        logger.info("\U0001f916 Generating SEO blog...")
-        blog = self.llm.generate_blog(merged)
+        logger.info("🤖 Generating SEO blog...")
+        # Sanitize merged data before passing to blog generator
+        sanitized_for_blog = {k: _sanitize_for_llm(str(v)) if isinstance(v, str) else v
+                              for k, v in merged.items()}
+        blog = self.llm.generate_blog(sanitized_for_blog)
         if blog:
-            merged["blog"] = blog
-            logger.info(f"\u2713 Blog generated ({len(blog)} chars)")
+            merged["blog_article"] = blog
+            logger.info(f"✓ Blog generated ({len(blog)} chars)")
+
+            # ── Parse FAQs from blog HTML if LLM didn't return them ───────────
+            if not merged.get("faqs"):
+                merged["faqs"] = _extract_faqs_from_blog(blog)
+                if merged["faqs"]:
+                    logger.info(f"✓ Extracted {len(merged['faqs'])} FAQs from blog")
+
+            # ── Parse highlights from blog HTML if LLM didn't return them ─────
+            if not merged.get("highlights"):
+                merged["highlights"] = _extract_highlights_from_blog(blog)
+                if merged["highlights"]:
+                    logger.info(f"✓ Extracted {len(merged['highlights'])} highlights from blog")
         else:
-            logger.warning("\u26a0\ufe0f  Blog generation failed")
+            logger.warning("⚠️  Blog generation failed")
+
+        # ── STEP 6: Verify — purge any freejobalert leakage from all fields ───
+        fja_count = _verify_no_fja(merged)
+        if fja_count:
+            logger.info(f"✓ Post-LLM verification: removed freejobalert from {fja_count} field(s)")
+        else:
+            logger.info("✓ Post-LLM verification passed — no freejobalert references found")
+
+        # ── Auto-generate seo_title / meta_description if still missing ───────
+        if not merged.get("seo_title") and merged.get("title") and merged.get("organization"):
+            merged["seo_title"] = f"{merged['title'][:45]} – {merged['organization'][:14]}"[:60]
+        if not merged.get("meta_description") and merged.get("title") and merged.get("organization"):
+            merged["meta_description"] = (
+                f"Apply for {merged['title']} at {merged['organization']}. "
+                f"Check eligibility, vacancies, and last date."
+            )[:150]
 
         return merged
 
@@ -213,14 +250,25 @@ SmartProcessor = SmartJobProcessor
 def _extract_links_from_html(html: str) -> dict:
     """
     Extract apply_url, pdf_url, official_website from FreeJobAlert HTML.
+
+    Apply links on freejobalert.com are often wrapped in a freejobalert
+    redirect/tracking URL (e.g. /go/org-name). We follow that redirect once
+    to get the real destination URL.
     """
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "html.parser")
     links = {"apply_url": None, "pdf_url": None, "official_website": None}
 
-    pdf_labels     = ["official notification pdf", "notification pdf", "download notification"]
-    apply_labels   = ["apply online", "online application", "registration link"]
+    pdf_labels = [
+        "official notification pdf", "notification pdf",
+        "download notification", "download pdf", "official advt",
+    ]
+    apply_labels = [
+        "apply online", "online application", "registration link",
+        "apply now", "click here to apply", "online apply",
+        "apply",  # catch-all — matched last so it doesn't overlap
+    ]
     website_labels = ["official website", "official site", "website link"]
 
     for table in soup.find_all("table"):
@@ -230,38 +278,46 @@ def _extract_links_from_html(html: str) -> dict:
                 continue
 
             label_text = cells[0].get_text(strip=True).lower()
-            link_tag   = cells[1].find("a", href=True)
-            if not link_tag:
+
+            # Collect ALL links in the value cell, not just the first one
+            all_links = cells[1].find_all("a", href=True)
+            if not all_links:
                 continue
 
-            href = link_tag["href"].strip()
-            if not href or href.startswith("#") or href.startswith("javascript"):
-                continue
+            for link_tag in all_links:
+                href = link_tag["href"].strip()
+                if not href or href.startswith("#") or href.startswith("javascript"):
+                    continue
 
-            if not links["pdf_url"]:
-                for pattern in pdf_labels:
-                    if pattern in label_text:
-                        links["pdf_url"] = href
-                        break
+                # PDF link
+                if not links["pdf_url"]:
+                    for pattern in pdf_labels:
+                        if pattern in label_text:
+                            links["pdf_url"] = href
+                            break
 
-            if not links["apply_url"]:
-                for pattern in apply_labels:
-                    if pattern in label_text:
-                        if "freejobalert" not in href.lower():
-                            links["apply_url"] = href
-                        break
+                # Apply Online link
+                if not links["apply_url"]:
+                    for pattern in apply_labels:
+                        if pattern in label_text:
+                            apply_href = _resolve_apply_url(href)
+                            if apply_href:
+                                links["apply_url"] = apply_href
+                                logger.info(f"✓ Apply link resolved: {apply_href[:60]}...")
+                            break
 
-            if not links["official_website"]:
-                for pattern in website_labels:
-                    if pattern in label_text:
-                        links["official_website"] = href
-                        break
+                # Official website
+                if not links["official_website"]:
+                    for pattern in website_labels:
+                        if pattern in label_text:
+                            links["official_website"] = href
+                            break
 
-    # Fallback: scan all <a> tags
-    if not any(links.values()):
-        logger.debug("No links found in tables, scanning all <a> tags")
-        apply_re   = re.compile(r'apply[\s_-]?online|apply[\s_-]?now|register', re.I)
-        pdf_re     = re.compile(r'\.pdf(\?.*)?$', re.I)
+    # Fallback: scan ALL <a> tags for any links still missing
+    if not links["apply_url"] or not links["pdf_url"] or not links["official_website"]:
+        logger.debug("Scanning all <a> tags for missing links...")
+        apply_re    = re.compile(r'apply[\s_-]?(online|now)|register\s*(now|here)?|click\s*here', re.I)
+        pdf_re      = re.compile(r'\.pdf(\?.*)?$', re.I)
         official_re = re.compile(r'official[\s_-]?(website|site)', re.I)
 
         for tag in soup.find_all("a", href=True):
@@ -273,13 +329,59 @@ def _extract_links_from_html(html: str) -> dict:
             if pdf_re.search(href) and not links["pdf_url"]:
                 links["pdf_url"] = href
             elif apply_re.search(text) and not links["apply_url"]:
-                if href.startswith("http") and "freejobalert" not in href.lower():
-                    links["apply_url"] = href
+                resolved = _resolve_apply_url(href)
+                if resolved:
+                    links["apply_url"] = resolved
             elif official_re.search(text) and not links["official_website"]:
                 if href.startswith("http"):
                     links["official_website"] = href
 
     return links
+
+
+def _resolve_apply_url(href: str) -> Optional[str]:
+    """
+    Resolve an apply URL to the final destination.
+
+    FreeJobAlert wraps apply links in their own redirect (e.g.
+    https://www.freejobalert.com/go/org-name) to track clicks.
+    We follow the redirect (one hop) to retrieve the real apply URL.
+    If this is already a direct external link we return it as-is.
+    If it's a freejobalert non-redirect (article/category page) we skip it.
+    """
+    if not href or not href.startswith("http"):
+        return None
+
+    href_lower = href.lower()
+
+    # Not a freejobalert link — return as-is
+    if "freejobalert" not in href_lower:
+        return href
+
+    # FreeJobAlert article/listing pages — not an apply link
+    blocked_paths = ["/articles/", "/category/", "/view-all/", "/tag/",
+                     "freejobalert.com/#", "freejobalert.com/page/"]
+    if any(p in href_lower for p in blocked_paths):
+        return None
+
+    # FreeJobAlert redirect/tracking link — follow it once
+    try:
+        import requests as _req
+        resp = _req.get(
+            href,
+            allow_redirects=True,
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        final_url = resp.url
+        if "freejobalert" not in final_url.lower():
+            logger.debug(f"Redirect resolved: {href[:50]} → {final_url[:60]}")
+            return final_url
+        # Still on freejobalert after redirect — not a real apply URL
+        return None
+    except Exception as exc:
+        logger.debug(f"Could not follow redirect {href[:50]}: {exc}")
+        return None
 
 
 def _extract_raw_text(html: str) -> str:
@@ -299,12 +401,220 @@ def _extract_raw_text(html: str) -> str:
 
 def _log_summary(data: dict) -> None:
     logger.info(SEP)
-    logger.info("\U0001f4e6 FINAL DATA SUMMARY:")
+    logger.info("📦 FINAL DATA SUMMARY:")
     logger.info(f"   Source: {data.get('data_source')}")
     logger.info(f"   Title: {str(data.get('title', ''))[:50]}...")
     logger.info(f"   Organization: {str(data.get('organization', ''))[:30]}...")
     for field in ["category", "qualification", "vacancies", "apply_url", "pdf_url"]:
         val = data.get(field)
         if val:
-            logger.info(f"   \u2713 {field.replace('_', ' ').title()}: {str(val)[:50]}...")
+            logger.info(f"   ✓ {field.replace('_', ' ').title()}: {str(val)[:50]}...")
     logger.info(SEP)
+
+
+def _extract_faqs_from_blog(blog_html: str) -> list:
+    """
+    Parse FAQ Q&A pairs from the generated blog HTML.
+
+    Looks for the <h2>Frequently Asked Questions</h2> section and extracts
+    all <strong>Q:</strong> / <p>A:</p> or <dt>/<dd> patterns beneath it.
+    Returns a list of {"q": "...", "a": "..."} dicts.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(blog_html, "html.parser")
+        faqs = []
+
+        # Locate the FAQ heading
+        faq_heading = None
+        for tag in soup.find_all(["h2", "h3"]):
+            if "frequently asked" in tag.get_text(strip=True).lower() or "faq" in tag.get_text(strip=True).lower():
+                faq_heading = tag
+                break
+
+        if not faq_heading:
+            return faqs
+
+        # Walk siblings after the FAQ heading
+        current_q = None
+        for sibling in faq_heading.find_next_siblings():
+            text = sibling.get_text(strip=True)
+            tag_name = sibling.name
+
+            # Stop at next major heading
+            if tag_name in ["h2"] and faq_heading != sibling:
+                break
+
+            # Pattern 1: <strong>Q: ...</strong> followed by answer text
+            if tag_name in ["p", "div"]:
+                strong = sibling.find("strong")
+                if strong:
+                    strong_text = strong.get_text(strip=True)
+                    if strong_text.lower().startswith("q:") or strong_text.endswith("?"):
+                        current_q = strong_text.lstrip("Qq: ").strip()
+                        # Answer may be in the same tag after the strong
+                        answer_text = text.replace(strong_text, "").strip(" :-")
+                        if answer_text:
+                            faqs.append({"q": current_q, "a": answer_text})
+                            current_q = None
+                        continue
+
+                if current_q and text:
+                    faqs.append({"q": current_q, "a": text})
+                    current_q = None
+
+            # Pattern 2: <dt> question / <dd> answer
+            elif tag_name == "dt":
+                current_q = text
+            elif tag_name == "dd" and current_q:
+                faqs.append({"q": current_q, "a": text})
+                current_q = None
+
+        return faqs[:15]  # cap at 15 FAQs
+
+    except Exception as exc:
+        logger.warning(f"FAQ extraction from blog failed: {exc}")
+        return []
+
+
+def _extract_highlights_from_blog(blog_html: str) -> list:
+    """
+    Parse highlight bullet points from the generated blog HTML.
+
+    Looks for the <h2>Highlights</h2> / <h2>Quick Overview</h2> section
+    and extracts all <li> or <td> text pairs as 'Key: Value' strings.
+    Returns a list of strings.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(blog_html, "html.parser")
+        highlights = []
+
+        # Locate the highlights heading
+        hl_heading = None
+        for tag in soup.find_all(["h2", "h3"]):
+            txt = tag.get_text(strip=True).lower()
+            if "highlight" in txt or "quick overview" in txt or "overview" in txt:
+                hl_heading = tag
+                break
+
+        if not hl_heading:
+            return highlights
+
+        # Walk siblings after the heading
+        for sibling in hl_heading.find_next_siblings():
+            tag_name = sibling.name
+
+            # Stop at next major heading
+            if tag_name == "h2":
+                break
+
+            # Bullet list
+            if tag_name in ["ul", "ol"]:
+                for li in sibling.find_all("li"):
+                    text = li.get_text(strip=True)
+                    if text:
+                        highlights.append(text)
+
+            # Table rows (key: value pairs)
+            elif tag_name == "table":
+                for row in sibling.find_all("tr"):
+                    cells = row.find_all(["td", "th"])
+                    if len(cells) >= 2:
+                        key = cells[0].get_text(strip=True)
+                        val = cells[1].get_text(strip=True)
+                        if key and val:
+                            highlights.append(f"{key}: {val}")
+
+        return highlights[:10]  # cap at 10 highlights
+
+    except Exception as exc:
+        logger.warning(f"Highlights extraction from blog failed: {exc}")
+        return []
+
+
+# ─── FreeJobAlert Sanitization ─────────────────────────────────────────────
+
+
+# Compiled once for performance
+_FJA_URL_RE = re.compile(
+    r'https?://(?:www\.)?(?:img\d*\.)?freejobalert\.com[^\s\'"<>]*',
+    re.IGNORECASE,
+)
+_FJA_BRAND_RE = re.compile(
+    r'\bfreejobalert(?:\.com)?\b',
+    re.IGNORECASE,
+)
+_FJA_ATTR_RE = re.compile(
+    r'\b(?:source|via|by|from|courtesy of)\s*:?\s*freejobalert(?:\.com)?\b[^.]*\.',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_for_llm(text: str) -> str:
+    """
+    Remove all FreeJobAlert references from text before it goes to the LLM.
+
+    Strips:
+    - Full freejobalert.com URLs (including image/cdn subdomains)
+    - Standalone 'freejobalert' / 'freejobalert.com' brand mentions
+    - Attribution phrases like 'Source: FreeJobAlert', 'via FreeJobAlert.com'
+
+    Collapses any resulting double-spaces / blank lines.
+    """
+    if not text:
+        return text
+
+    # 1. Remove full URLs first (most specific)
+    text = _FJA_URL_RE.sub("", text)
+
+    # 2. Remove attribution phrases like "Source: FreeJobAlert."
+    text = _FJA_ATTR_RE.sub("", text)
+
+    # 3. Remove bare brand name mentions
+    text = _FJA_BRAND_RE.sub("", text)
+
+    # 4. Clean up double spaces and blank lines left behind
+    text = re.sub(r'[ \t]{2,}', ' ', text)           # collapse spaces
+    text = re.sub(r'\n{3,}', '\n\n', text)            # collapse blank lines
+    text = re.sub(r'^\s+|\s+$', '', text, flags=re.MULTILINE)  # strip lines
+
+    return text.strip()
+
+
+def _sanitize_value(value) -> object:
+    """Recursively sanitize a value (str, list, dict) for FJA references."""
+    if isinstance(value, str):
+        return _sanitize_for_llm(value)
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+    return value  # int, bool, None — leave as-is
+
+
+# Fields that should NEVER be sanitized (they contain freejobalert URLs intentionally)
+_FJA_PRESERVE_FIELDS = {"freejobalert_url", "pdf_url"}
+
+
+def _verify_no_fja(data: dict) -> int:
+    """
+    Scan all fields in the merged data dict after LLM output.
+    Sanitize any freejobalert references that slipped through.
+
+    Skips 'freejobalert_url' and 'pdf_url' which intentionally hold FJA links.
+
+    Returns the count of fields that were modified.
+    """
+    modified = 0
+    for key, value in list(data.items()):
+        if key in _FJA_PRESERVE_FIELDS:
+            continue
+
+        cleaned = _sanitize_value(value)
+        if cleaned != value:
+            data[key] = cleaned
+            modified += 1
+            logger.debug(f"   Removed FJA reference from field: '{key}'")
+
+    return modified

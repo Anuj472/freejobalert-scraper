@@ -13,7 +13,8 @@ class Config:
     
     # Supabase Configuration
     SUPABASE_URL = os.getenv('SUPABASE_URL')
-    SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+    # Prefer service role key (bypasses RLS); fall back to SUPABASE_KEY for compatibility
+    SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
     
     # Google Drive Configuration
     GOOGLE_CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
@@ -92,7 +93,7 @@ class Config:
         if not Config.SUPABASE_URL:
             errors.append('SUPABASE_URL is not set')
         if not Config.SUPABASE_KEY:
-            errors.append('SUPABASE_KEY is not set')
+            errors.append('SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY) is not set')
         
         # Google Drive is optional
         if not Config.GOOGLE_DRIVE_FOLDER_ID:

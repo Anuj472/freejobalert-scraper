@@ -252,20 +252,39 @@ Return JSON exactly in this schema (use null for missing fields):
   "title": "full official job title",
   "organization": "full organization name",
   "category": "one of: Central Govt | State Govt | PSU | Bank | Railway | Defence | Teaching | Healthcare | Other",
+  "advt_no": "advertisement/notification number e.g. Advt. No. 01/2025",
   "post_name": "comma-separated post names",
   "vacancies": integer or null,
-  "qualification": "required educational qualification",
-  "age_limit": "e.g. 18-25 years",
+  "qualification": "required educational qualification in detail",
+  "age_limit": "e.g. 18-25 years, with relaxation info",
   "salary": "pay scale or salary range",
-  "application_fee": "fee details or Free",
-  "last_date": "DD/MM/YYYY or descriptive",
-  "selection_process": "Written Exam | Interview | Merit etc",
+  "application_fee": "fee details by category e.g. General: 500, SC/ST: 250, or Free",
+  "last_date": "DD/MM/YYYY",
+  "selection_process": "comma-separated stages e.g. Written Exam, Interview, Document Verification",
+  "how_to_apply": "brief step-by-step how to apply description",
   "location": "state or All India",
-  "exam_date": "DD/MM/YYYY or null",
-  "official_website": null,
-  "apply_url": null,
-  "pdf_url": null,
-  "extra_notes": "any important info not covered above"
+  "full_description": "2-3 sentence plain-text summary of what this job notification is about",
+  "important_dates": {{
+    "notification_date": "DD/MM/YYYY or null",
+    "application_start_date": "DD/MM/YYYY or null",
+    "last_date": "DD/MM/YYYY or null",
+    "exam_date": "DD/MM/YYYY or null",
+    "admit_card_date": "DD/MM/YYYY or null",
+    "result_date": "DD/MM/YYYY or null"
+  }},
+  "vacancy_details": {{
+    "Post Name 1": integer_vacancies,
+    "Post Name 2": integer_vacancies
+  }},
+  "highlights": [
+    "Total Vacancies: X",
+    "Application Fee: Y",
+    "Last Date: DD/MM/YYYY",
+    "Salary: Z",
+    "Qualification: Q"
+  ],
+  "seo_title": "60-character SEO-optimized title for the job post",
+  "meta_description": "150-character meta description summarising the recruitment for search engines"
 }}"""
 
     BLOG_PROMPT = """You are an SEO content writer for an Indian government job portal.

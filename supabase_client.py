@@ -214,8 +214,9 @@ class SupabaseClient:
                 'organization': job_data.get('organization'),
                 'qualification': job_data.get('qualification'),
                 'category': job_data.get('category'),
-                'advt_no': job_data.get('advt_no'),
             }
+            if job_data.get('advt_no'):
+                insert_data['advt_no'] = job_data.get('advt_no')
             
             # ── Slug generation ──────────────────────────────────────────────
             # generate_slug() now mirrors the frontend createSlug() exactly.
@@ -236,18 +237,19 @@ class SupabaseClient:
                     f"Missing title or org for slug generation: "
                     f"title={bool(title)}, org={bool(org)}"
                 )
-            
+
             # ── Apply Online URL ─────────────────────────────────────────────
-            job_url = job_data.get('job_url')
+            # The pipeline stores this as 'apply_url'; 'job_url' is a legacy fallback.
+            job_url = job_data.get('apply_url') or job_data.get('job_url')
             if job_url:
                 if self._is_freejobalert_url(job_url):
-                    logger.error(f"\U0001f6a8 CRITICAL: job_url contains FreeJobAlert link! {job_url[:70]}")
+                    logger.error(f"🚨 CRITICAL: apply_url contains FreeJobAlert link! {job_url[:70]}")
                     job_url = None
                 else:
                     insert_data['job_url'] = job_url
-                    logger.info(f"\u2713 Apply Online link: {job_url[:70]}...")
+                    logger.info(f"✓ Apply Online link: {job_url[:70]}...")
             else:
-                logger.info("\u26a0\ufe0f  No Apply Online link found - job_url will be NULL")
+                logger.info("⚠️  No Apply Online link found - job_url will be NULL")
             
             if self.has_fja_url_column:
                 insert_data['freejobalert_url'] = fja_url
@@ -292,33 +294,33 @@ class SupabaseClient:
                 insert_data['selection_process'] = job_data.get('selection_process')
             if job_data.get('how_to_apply'):
                 insert_data['how_to_apply'] = job_data.get('how_to_apply')
-            
-            if job_data.get('important_dates'):
-                important_dates = job_data.get('important_dates')
-                if isinstance(important_dates, dict) and important_dates:
-                    insert_data['important_dates'] = json.dumps(important_dates)
-            
-            if job_data.get('vacancy_details'):
-                vacancy_details = job_data.get('vacancy_details')
-                if isinstance(vacancy_details, dict) and vacancy_details:
-                    insert_data['vacancy_details'] = json.dumps(vacancy_details)
-            
+
+            # ── JSONB fields ─────────────────────────────────────────────────
+            important_dates = job_data.get('important_dates')
+            if isinstance(important_dates, dict) and important_dates:
+                insert_data['important_dates'] = json.dumps(important_dates)
+
+            vacancy_details = job_data.get('vacancy_details')
+            if isinstance(vacancy_details, dict) and vacancy_details:
+                insert_data['vacancy_details'] = json.dumps(vacancy_details)
+
+            highlights = job_data.get('highlights')
+            if isinstance(highlights, list) and highlights:
+                insert_data['highlights'] = json.dumps(highlights)
+
+            faqs = job_data.get('faqs')
+            if isinstance(faqs, list) and faqs:
+                insert_data['faqs'] = json.dumps(faqs)
+
+            # ── SEO / blog fields ────────────────────────────────────────────
             if job_data.get('seo_title'):
                 insert_data['seo_title'] = job_data.get('seo_title')
             if job_data.get('meta_description'):
                 insert_data['meta_description'] = job_data.get('meta_description')
-            if job_data.get('blog_article'):
-                insert_data['blog_article'] = job_data.get('blog_article')
-            
-            if job_data.get('highlights'):
-                highlights = job_data.get('highlights')
-                if isinstance(highlights, list) and highlights:
-                    insert_data['highlights'] = json.dumps(highlights)
-            
-            if job_data.get('faqs'):
-                faqs = job_data.get('faqs')
-                if isinstance(faqs, list) and faqs:
-                    insert_data['faqs'] = json.dumps(faqs)
+            # Accept 'blog_article' (new key) or 'blog' (old key) as fallback
+            blog_content = job_data.get('blog_article') or job_data.get('blog')
+            if blog_content:
+                insert_data['blog_article'] = blog_content
             
             if job_data.get('data_source'):
                 insert_data['data_source'] = job_data.get('data_source')
