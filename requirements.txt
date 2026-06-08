@@ -41,12 +41,12 @@ coloredlogs==15.0.1
 pandas==2.1.4
 
 # ===========================================
-# Gemma 3 12B LLM via Ollama
+# Gemma 4 12B LLM via Ollama
 # ===========================================
 # Uses Ollama HTTP API - NO PYTHON PACKAGE NEEDED
-# Just install Ollama and run: ollama pull gemma3:12b
+# Just install Ollama and run: ollama pull gemma4:12b
 #
 # Setup:
 # 1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
-# 2. Pull model:    ollama pull gemma3:12b
+# 2. Pull model:    ollama pull gemma4:12b
 # 3. Start server:  ollama serve

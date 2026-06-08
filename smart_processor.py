@@ -35,7 +35,7 @@ class SmartJobProcessor:
 
     def __init__(
         self,
-        model: str = "gemma3:12b",
+        model: str = "gemma4:12b",
         ollama_url: str = "http://localhost:11434",
     ):
         self.llm = GemmaProcessor(model=model, base_url=ollama_url)
@@ -189,9 +189,9 @@ class SmartJobProcessor:
                 merged[field] = val
 
         if content_label == "PDF Text" and llm_fields:
-            merged["data_source"] = "pdf_gemma3"
+            merged["data_source"] = "pdf_gemma4"
         elif llm_fields:
-            merged["data_source"] = "html_gemma3"
+            merged["data_source"] = "html_gemma4"
         else:
             merged["data_source"] = "html_only"
 

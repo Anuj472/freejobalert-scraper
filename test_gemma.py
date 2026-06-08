@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Test script for Gemma 3 processor.
+"""Test script for Gemma 4 processor.
 
 Tests:
 1. Ollama connection
-2. Gemma 3 model availability
+2. Gemma 4 model availability
 3. Text extraction
-4. Image/Vision processing (if pdf2image available)
-5. Blog generation
+4. Blog generation
 """
 
 import sys
@@ -45,18 +44,18 @@ def test_ollama_connection():
         return False
 
 def test_gemma_availability():
-    """Test if Gemma 3 model is available."""
+    """Test if Gemma 4 model is available."""
     logger.info("\n" + "=" * 60)
-    logger.info("TEST 2: Gemma 3 Model Availability")
+    logger.info("TEST 2: Gemma 4 Model Availability")
     logger.info("=" * 60)
     
     gemma = GemmaProcessor()
     if gemma.is_available():
-        logger.info("✓ Gemma 3 12B is available")
+        logger.info("✓ Gemma 4 12B is available")
         return True
     else:
-        logger.error("✗ Gemma 3 12B not found")
-        logger.error("  Run: ollama pull gemma3:12b")
+        logger.error("✗ Gemma 4 12B not found")
+        logger.error("  Run: ollama pull gemma4:12b")
         return False
 
 def test_text_extraction():
@@ -101,7 +100,7 @@ def test_text_extraction():
     
     try:
         logger.info("📝 Testing text extraction...")
-        data = gemma._extract_from_text(sample_text)
+        data = gemma.extract_fields(sample_text, "Text")
         
         if data:
             logger.info("✓ Text extraction successful")
@@ -139,7 +138,7 @@ def test_blog_generation():
         'age_limit': '21-32 years',
         'qualification': "Bachelor's Degree",
         'location': 'All India',
-        'application_fee': {'General': 'Rs. 100', 'SC/ST': 'Nil'}
+        'application_fee': 'General: Rs. 100, SC/ST: Nil'
     }
     
     try:
@@ -148,11 +147,7 @@ def test_blog_generation():
         
         if blog:
             logger.info("✓ Blog generation successful")
-            logger.info(f"  - SEO Title: {blog.get('seo_title', 'N/A')[:60]}...")
-            logger.info(f"  - Meta Desc: {blog.get('meta_description', 'N/A')[:60]}...")
-            logger.info(f"  - Article Length: {len(blog.get('article', ''))} chars")
-            logger.info(f"  - Highlights: {len(blog.get('highlights', []))}")
-            logger.info(f"  - FAQs: {len(blog.get('faqs', []))}")
+            logger.info(f"  - Blog article length: {len(blog)} chars")
             return True
         else:
             logger.error("✗ Blog generation failed")
@@ -161,35 +156,17 @@ def test_blog_generation():
         logger.error(f"✗ Error: {e}")
         return False
 
-def test_pdf_processing():
-    """Test PDF processing (optional - requires real PDF)."""
-    logger.info("\n" + "=" * 60)
-    logger.info("TEST 5: PDF Processing (Optional)")
-    logger.info("=" * 60)
-    
-    logger.info("⚠️  Skipping PDF test (requires real PDF URL)")
-    logger.info("  To test PDF processing:")
-    logger.info("  1. Find a job notification PDF URL")
-    logger.info("  2. Run: python -c \"")
-    logger.info("     from gemma_processor import GemmaProcessor")
-    logger.info("     g = GemmaProcessor()")
-    logger.info("     data = g.process_pdf_url('YOUR_PDF_URL')")
-    logger.info("     print(data)")
-    logger.info("     \"")
-    return True
-
 def main():
     """Run all tests."""
     logger.info("\n" + "#" * 60)
-    logger.info("# GEMMA 3 PROCESSOR TEST SUITE")
+    logger.info("# GEMMA 4 PROCESSOR TEST SUITE")
     logger.info("#" * 60 + "\n")
     
     results = {
         'Ollama Connection': test_ollama_connection(),
-        'Gemma 3 Availability': test_gemma_availability(),
+        'Gemma 4 Availability': test_gemma_availability(),
         'Text Extraction': test_text_extraction(),
-        'Blog Generation': test_blog_generation(),
-        'PDF Processing': test_pdf_processing()
+        'Blog Generation': test_blog_generation()
     }
     
     # Summary
@@ -209,7 +186,7 @@ def main():
     logger.info("=" * 60)
     
     if passed == total:
-        logger.info("\n✅ All tests passed! Gemma 3 is ready to use.")
+        logger.info("\n✅ All tests passed! Gemma 4 is ready to use.")
         return 0
     elif passed >= 2:  # Ollama + Gemma availability
         logger.warning("\n⚠️  Some tests failed, but basic functionality works.")

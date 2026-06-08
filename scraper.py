@@ -1,7 +1,7 @@
 """Web scraper for FreeJobAlert.com with smart processing.
 
 Features:
-- PDF-first extraction using Gemma 3 multimodal
+- PDF-first extraction using Gemma 4 multimodal
 - Fallback to HTML text + LLM
 - Always generates SEO blog
 - Duplicate-page detection: stops pagination when site serves same content
@@ -57,7 +57,7 @@ class FreeJobAlertScraper:
 
         self.processor = SmartJobProcessor()
         logger.info("[OK] Scraper initialized with Smart Processor")
-        logger.info("     - PDF-first extraction (Gemma 3 multimodal)")
+        logger.info("     - PDF-first extraction (Gemma 4 multimodal)")
         logger.info("     - HTML fallback (CSS parser)")
         logger.info("     - Always generates SEO blog")
 

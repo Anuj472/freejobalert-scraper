@@ -234,7 +234,7 @@ def _extract_with_pymupdf(pdf_bytes: bytes, max_pages: int) -> Optional[str]:
 
 class GemmaProcessor:
     """
-    Calls a local Ollama model (default: gemma3:12b) for:
+    Calls a local Ollama model (default: gemma4:12b) for:
       1. Structured field extraction from HTML text or PDF text
       2. SEO blog generation (9000+ characters)
     """
@@ -314,11 +314,23 @@ Write the full blog post now. It MUST be at least 9000 characters:"""
 
     def __init__(
         self,
-        model: str = "gemma3:12b",
+        model: str = "gemma4:12b",
         base_url: str = "http://localhost:11434",
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
+
+    def is_available(self) -> bool:
+        """Check if the configured model is available in Ollama."""
+        try:
+            import httpx
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                return any(self.model in m or m in self.model for m in models)
+            return False
+        except Exception:
+            return False
 
     def _call_ollama(
         self,
