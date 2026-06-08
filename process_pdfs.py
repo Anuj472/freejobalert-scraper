@@ -10,7 +10,6 @@ from typing import List, Dict
 from config import Config
 from supabase_client import SupabaseClient
 from gdrive_uploader import GoogleDriveUploader
-from scraper import FreeJobAlertScraper
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +47,10 @@ def process_job_pdfs(batch_size: int = 10, max_jobs: int = None):
         logger.info("Initializing clients...")
         db_client = SupabaseClient()
         drive_uploader = GoogleDriveUploader()
-        scraper = FreeJobAlertScraper()
         
         # Get jobs that need PDF processing
-        # These are jobs where pdf_url is NULL and gdrive_link is NULL
-        logger.info("Fetching jobs that need PDF processing...")
-        jobs = db_client.get_jobs_without_gdrive_link(limit=batch_size)
+        logger.info("Fetching jobs that need PDF processing (FreeJobAlert URLs)...")
+        jobs = db_client.get_jobs_with_freejobalert_pdfs(limit=batch_size)
         
         if not jobs:
             logger.info("No jobs found that need PDF processing")
@@ -72,25 +69,15 @@ def process_job_pdfs(batch_size: int = 10, max_jobs: int = None):
         skipped_count = 0
         
         for idx, job in enumerate(jobs, 1):
-            job_url = job.get('job_url')
+            job_id = job.get('id')
+            pdf_url = job.get('pdf_url')
             job_title = job.get('title', 'Unknown')
             
             logger.info(f"\n{'='*80}")
             logger.info(f"Processing job {idx}/{len(jobs)}: {job_title}")
-            logger.info(f"Job URL: {job_url}")
+            logger.info(f"PDF URL: {pdf_url}")
             
             try:
-                # Fetch fresh job details to get PDF URL
-                logger.info("Fetching fresh job details...")
-                job_details = scraper.get_job_details(job_url)
-                
-                if not job_details:
-                    logger.warning(f"Could not fetch details for job: {job_title}")
-                    failed_count += 1
-                    continue
-                
-                pdf_url = job_details.get('official_notification_pdf')
-                
                 if not pdf_url:
                     logger.info(f"No PDF URL found for job: {job_title}")
                     skipped_count += 1
@@ -98,12 +85,8 @@ def process_job_pdfs(batch_size: int = 10, max_jobs: int = None):
                 
                 # Check if it's a FreeJobAlert PDF
                 if not is_freejobalert_pdf(pdf_url):
-                    logger.info(f"PDF is external (not FreeJobAlert): {pdf_url[:80]}")
-                    # Update with external PDF URL
-                    db_client.update_job(job_url, {'pdf_url': pdf_url})
-                    logger.info("Updated job with external PDF URL")
-                    success_count += 1
-                    processed_count += 1
+                    logger.info(f"PDF is already external or Drive link: {pdf_url[:80]}")
+                    skipped_count += 1
                     continue
                 
                 # FreeJobAlert PDF - needs upload
@@ -119,8 +102,8 @@ def process_job_pdfs(batch_size: int = 10, max_jobs: int = None):
                 if drive_link:
                     # Update database with Google Drive link
                     logger.info(f"Upload successful! Drive link: {drive_link}")
-                    db_client.update_job(job_url, {'gdrive_link': drive_link})
-                    logger.info("✅ Job updated with Google Drive link")
+                    db_client.update_job_by_id(job_id, {'pdf_url': drive_link})
+                    logger.info("✅ Job pdf_url updated with Google Drive link")
                     success_count += 1
                 else:
                     logger.error("❌ Failed to upload PDF to Google Drive")
@@ -146,7 +129,7 @@ def process_job_pdfs(batch_size: int = 10, max_jobs: int = None):
         logger.info(f"Total jobs processed: {processed_count}")
         logger.info(f"Successfully uploaded: {success_count}")
         logger.info(f"Failed: {failed_count}")
-        logger.info(f"Skipped (no PDF): {skipped_count}")
+        logger.info(f"Skipped: {skipped_count}")
         
     except Exception as e:
         logger.error(f"Fatal error in process_job_pdfs: {e}")
@@ -161,25 +144,31 @@ def get_upload_stats():
         logger.info("\nPDF Upload Statistics:")
         logger.info("="*60)
         
-        # Jobs needing upload (NULL pdf_url and NULL gdrive_link)
-        needs_upload = db_client.get_jobs_without_gdrive_link(limit=1000)
-        logger.info(f"Jobs needing PDF processing: {len(needs_upload)}")
+        # Jobs needing upload (pdf_url contains freejobalert.com)
+        result_needs = db_client.client.table('jobs') \
+            .select('id') \
+            .like('pdf_url', '%freejobalert.com%') \
+            .execute()
+        needs_upload_count = len(result_needs.data) if result_needs.data else 0
+        logger.info(f"Jobs needing PDF processing: {needs_upload_count}")
         
-        # Jobs with external PDFs
-        result = db_client.client.table('jobs') \
+        # Jobs with Drive links (pdf_url contains drive.google.com)
+        result_drive = db_client.client.table('jobs') \
+            .select('id') \
+            .like('pdf_url', '%drive.google.com%') \
+            .execute()
+        drive_link_count = len(result_drive.data) if result_drive.data else 0
+        logger.info(f"Jobs with Google Drive links: {drive_link_count}")
+        
+        # Jobs with external PDFs (pdf_url is not null, doesn't contain freejobalert.com, doesn't contain drive.google.com)
+        result_all_pdf = db_client.client.table('jobs') \
             .select('id') \
             .not_.is_('pdf_url', 'null') \
             .execute()
-        external_pdf_count = len(result.data) if result.data else 0
-        logger.info(f"Jobs with external PDFs: {external_pdf_count}")
+        total_pdf_count = len(result_all_pdf.data) if result_all_pdf.data else 0
         
-        # Jobs with Drive links
-        result = db_client.client.table('jobs') \
-            .select('id') \
-            .not_.is_('gdrive_link', 'null') \
-            .execute()
-        drive_link_count = len(result.data) if result.data else 0
-        logger.info(f"Jobs with Google Drive links: {drive_link_count}")
+        external_pdf_count = total_pdf_count - drive_link_count - needs_upload_count
+        logger.info(f"Jobs with external PDFs: {external_pdf_count}")
         
         # Total jobs
         result = db_client.client.table('jobs').select('id').execute()

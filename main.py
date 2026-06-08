@@ -4,17 +4,14 @@
 Features:
 - Smart processing: PDF-first extraction with HTML fallback
 - Always generates SEO blog using Gemma 3
-- Google Drive upload for FreeJobAlert PDFs
+- Google Drive upload for FreeJobAlert PDFs (handled by SmartJobProcessor)
 - External PDFs kept as URLs
 """
 
 import sys
 import logging
 import argparse
-import os
 from typing import List
-from datetime import datetime
-from urllib.parse import urlparse
 
 from config import Config
 from scraper import FreeJobAlertScraper
@@ -33,13 +30,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def is_freejobalert_pdf(url: str) -> bool:
-    """Check if PDF is hosted on FreeJobAlert domain."""
-    if not url:
-        return False
-    parsed = urlparse(url.lower())
-    return 'freejobalert.com' in parsed.netloc
-
 def process_job(
     job: dict,
     scraper: FreeJobAlertScraper,
@@ -50,85 +40,38 @@ def process_job(
     Process a single job with smart extraction and blog generation.
     
     Workflow:
-    1. Extract data (PDF-first, HTML fallback)
-    2. Generate SEO blog (always)
-    3. Handle PDF upload/URL
+    1. Extract data (PDF-first, HTML fallback) — handled by SmartJobProcessor
+    2. Generate SEO blog (always) — handled by SmartJobProcessor
+    3. Upload FreeJobAlert PDFs to Google Drive — handled by SmartJobProcessor
     4. Save to database
+    
+    Note: PDF upload is handled entirely by SmartJobProcessor (inside scraper).
+          This function only needs to pass the processed data to Supabase.
     """
     try:
         # Fetch and process job details with smart processor
         logger.info(f"Processing: {job['title']}")
         
-        # Smart processor will:
-        # 1. Try PDF extraction (if available)
-        # 2. Fallback to HTML parsing
-        # 3. ALWAYS generate blog
+        # Smart processor handles the full pipeline:
+        # 1. Extract HTML links (apply_url, pdf_url, official_website)
+        # 2. Download PDF text or use HTML text
+        # 3. LLM field extraction
+        # 4. Upload FreeJobAlert PDFs to Google Drive
+        # 5. Generate SEO blog
         details = scraper.get_job_details(job['details_url'], job)
         
         if not details:
             logger.warning(f"Could not fetch details for: {job['title']}")
             return False
         
-        # Details already includes merged data and blog content
-        job_data = details
-        
-        # Handle PDF based on source
-        pdf_url = job_data.get('pdf_url') or job_data.get('official_notification_pdf')
-        
-        if pdf_url and gdrive_uploader:
-            # Check if PDF needs to be uploaded to Google Drive
-            needs_upload = is_freejobalert_pdf(pdf_url) or job_data.get('pdf_needs_upload', False)
-            
-            if needs_upload:
-                # FreeJobAlert PDF -> Upload to Google Drive and save Drive link in pdf_url
-                logger.info(f"FreeJobAlert PDF detected: {pdf_url[:60]}...")
-                logger.info(f"Downloading and uploading to Google Drive...")
-                
-                # Create temp filename
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                org_name = job_data.get('organization', 'Job').replace(' ', '_')[:30]
-                pdf_filename = f"{org_name}_{timestamp}.pdf"
-                pdf_path = os.path.join('temp', pdf_filename)
-                
-                # Ensure temp directory exists
-                os.makedirs('temp', exist_ok=True)
-                
-                # Download PDF
-                if scraper.download_pdf(pdf_url, pdf_path):
-                    # Upload to Google Drive
-                    gdrive_link = gdrive_uploader.upload_pdf_and_get_link(pdf_path)
-                    
-                    if gdrive_link:
-                        # Save Google Drive link directly to pdf_url
-                        job_data['pdf_url'] = gdrive_link
-                        logger.info(f"[OK] PDF uploaded to Google Drive: {gdrive_link[:60]}...")
-                    else:
-                        logger.warning(f"Failed to upload PDF to Google Drive")
-                        # Clear pdf_url since we couldn't upload FreeJobAlert PDF
-                        job_data['pdf_url'] = None
-                    
-                    # Clean up temp file
-                    try:
-                        os.remove(pdf_path)
-                    except:
-                        pass
-                else:
-                    logger.warning(f"Failed to download PDF from: {pdf_url[:60]}...")
-                    # Clear pdf_url since we couldn't download FreeJobAlert PDF
-                    job_data['pdf_url'] = None
-            else:
-                # External PDF -> Keep original URL in pdf_url
-                logger.info(f"External PDF (no upload needed): {pdf_url[:60]}...")
-                job_data['pdf_url'] = pdf_url
-        
         # Insert into Supabase
-        if supabase_client.insert_job(job_data):
+        if supabase_client.insert_job(details):
             logger.info(f"Successfully saved: {job['title']}")
-            if job_data.get('pdf_url'):
-                pdf_source = "Google Drive" if 'drive.google.com' in job_data['pdf_url'] else "External"
-                logger.info(f"  -> PDF ({pdf_source}): {job_data['pdf_url'][:60]}...")
-            if job_data.get('blog_article'):
-                logger.info(f"  -> Blog: {len(job_data['blog_article'])} characters")
+            if details.get('pdf_url'):
+                pdf_source = "Google Drive" if 'drive.google.com' in details['pdf_url'] else "External"
+                logger.info(f"  -> PDF ({pdf_source}): {details['pdf_url'][:60]}...")
+            if details.get('blog_article'):
+                logger.info(f"  -> Blog: {len(details['blog_article'])} characters")
             return True
         
         return False

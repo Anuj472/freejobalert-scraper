@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 class SupabaseClient:
     """Client for interacting with Supabase database."""
     
+    # Columns that actually exist in the jobs table.
+    # Any key NOT in this set will be stripped before INSERT to prevent
+    # Postgres errors from LLM-hallucinated fields like 'application_url',
+    # 'organization_url', 'gdrive_link', etc.
+    VALID_COLUMNS = {
+        'title', 'organization', 'post_date', 'last_date', 'vacancies',
+        'qualification', 'location', 'job_url', 'pdf_url', 'category',
+        'advt_no', 'official_website', 'full_description', 'salary',
+        'age_limit', 'application_fee', 'selection_process', 'how_to_apply',
+        'important_dates', 'vacancy_details', 'freejobalert_url',
+        'seo_title', 'meta_description', 'blog_article', 'highlights',
+        'faqs', 'data_source', 'slug',
+    }
+    
     def __init__(self):
         """Initialize Supabase client."""
         try:
@@ -117,27 +131,96 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Error updating slug for job {job_id}: {e}")
             return False
+
+    def get_jobs_with_freejobalert_pdfs(self, limit: int = 100) -> List[Dict]:
+        """Get jobs where the pdf_url is a FreeJobAlert link (needs upload)."""
+        try:
+            result = self.client.table('jobs') \
+                .select('id, title, pdf_url, freejobalert_url, job_url') \
+                .like('pdf_url', '%freejobalert.com%') \
+                .limit(limit) \
+                .execute()
+            return result.data if result.data else []
+        except Exception as e:
+            logger.error(f"Error fetching jobs with FreeJobAlert PDFs: {e}")
+            return []
+
+    def update_job_by_id(self, job_id: str, update_data: Dict) -> Optional[Dict]:
+        """Update an existing job in the database by its UUID."""
+        try:
+            result = self.client.table('jobs') \
+                .update(update_data) \
+                .eq('id', job_id) \
+                .execute()
+            if result.data:
+                logger.info(f"Successfully updated job {job_id} by ID")
+                return result.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error updating job {job_id} by ID: {e}")
+            return None
     
     def _parse_date(self, date_str: str) -> Optional[str]:
-        """Convert date from DD-MM-YYYY or DD/MM/YYYY to YYYY-MM-DD."""
+        """Convert various date formats to YYYY-MM-DD for Postgres.
+        
+        Handles:
+          - DD-MM-YYYY, DD/MM/YYYY, DD.MM.YYYY
+          - YYYY-MM-DD (ISO)
+          - DD Month YYYY, DD Mon YYYY (full/abbreviated month names)
+          - Month DD, YYYY, Mon DD, YYYY
+          - DD-Mon-YYYY, DD/Mon/YYYY
+          - Trailing text in parentheses: "09-02-2026 (Closing date...)"
+          - Rejects bare day numbers: "13", "24"
+        """
         if not date_str or date_str.strip() == '':
             return None
         
         try:
-            if '-' in date_str:
-                parts = date_str.strip().split('-')
-                if len(parts) == 3:
-                    day, month, year = parts
-                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            # Step 1: Clean embedded and trailing noise from date strings
+            # Remove ALL parenthetical content: "2026 (05:00 PM)-02-20" → "2026 -02-20"
+            cleaned = re.sub(r'\s*\([^)]*\)\s*', ' ', date_str.strip())
+            # Remove comma-separated time: "2026, 11:59 PM-02-10" → "2026-02-10"
+            cleaned = re.sub(r',\s*\d{1,2}:\d{2}\s*(?:AM|PM|Hours?)?\s*', '', cleaned, flags=re.IGNORECASE)
+            # Strip common trailing descriptions
+            cleaned = re.sub(
+                r'\s*(?:closing|last|final|extended|revised|before|upto|up to).*$',
+                '', cleaned, flags=re.IGNORECASE
+            )
+            cleaned = cleaned.strip().rstrip('.')
             
-            elif '/' in date_str:
-                parts = date_str.strip().split('/')
-                if len(parts) == 3:
-                    day, month, year = parts
-                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            # Normalize whitespace around date separators
+            # "2026 -03-03" → "2026-03-03" (after paren removal from "2026 (23:59 Hours)-03-03")
+            cleaned = re.sub(r'\s*-\s*', '-', cleaned)
+            cleaned = re.sub(r'\s*/\s*', '/', cleaned)
+            cleaned = re.sub(r'\s*\.\s*', '.', cleaned)
             
-            elif re.match(r'^\d{4}-\d{2}-\d{2}$', date_str.strip()):
-                return date_str.strip()
+            # Step 2: Reject bare day numbers ("13", "24", "09")
+            if re.match(r'^\d{1,2}$', cleaned):
+                logger.warning(f"Date is just a day number, cannot parse: {date_str}")
+                return None
+            
+            # Step 3: Try multiple date formats via strptime
+            formats = [
+                '%d-%m-%Y',      # 15-02-2026
+                '%d/%m/%Y',      # 15/02/2026
+                '%d.%m.%Y',      # 15.02.2026
+                '%Y-%m-%d',      # 2026-02-15 (ISO)
+                '%d %B %Y',      # 15 February 2026
+                '%d %b %Y',      # 15 Feb 2026
+                '%B %d, %Y',     # February 15, 2026
+                '%b %d, %Y',     # Feb 15, 2026
+                '%d-%b-%Y',      # 15-Feb-2026
+                '%d/%b/%Y',      # 15/Feb/2026
+                '%d %B, %Y',     # 15 February, 2026
+            ]
+            
+            for fmt in formats:
+                try:
+                    parsed = datetime.strptime(cleaned, fmt)
+                    result = parsed.strftime('%Y-%m-%d')
+                    return result
+                except ValueError:
+                    continue
             
             logger.warning(f"Could not parse date: {date_str}")
             return None
@@ -163,6 +246,21 @@ class SupabaseClient:
         if not url:
             return False
         return 'freejobalert.com' in url.lower()
+    
+    def _job_url_exists(self, job_url: str) -> bool:
+        """Check if a job_url already exists in the DB.
+        
+        Multiple different jobs from the same org can share one apply portal
+        (e.g. centralbank.bank.in). Without this check, the second job's
+        INSERT would crash with a unique constraint violation on job_url.
+        """
+        if not job_url:
+            return False
+        try:
+            result = self.client.table('jobs').select('id').eq('job_url', job_url).limit(1).execute()
+            return bool(result.data)
+        except Exception:
+            return False
     
     def job_exists(self, fja_url: str) -> bool:
         """Check if a job already exists by FreeJobAlert source URL."""
@@ -205,6 +303,14 @@ class SupabaseClient:
             post_date = self._parse_date(job_data.get('post_date'))
             last_date = self._parse_date(job_data.get('last_date'))
             
+            # Fallback: try important_dates.last_date if top-level last_date failed
+            if not last_date:
+                important_dates_raw = job_data.get('important_dates')
+                if isinstance(important_dates_raw, dict):
+                    last_date = self._parse_date(important_dates_raw.get('last_date'))
+                    if last_date:
+                        logger.info(f"✓ last_date recovered from important_dates: {last_date}")
+            
             vacancies = job_data.get('vacancies')
             if vacancies is None and job_data.get('title'):
                 vacancies = self._parse_vacancies(job_data['title'])
@@ -245,6 +351,15 @@ class SupabaseClient:
                 if self._is_freejobalert_url(job_url):
                     logger.error(f"🚨 CRITICAL: apply_url contains FreeJobAlert link! {job_url[:70]}")
                     job_url = None
+                elif self._job_url_exists(job_url):
+                    # Bug #2 fix: Multiple jobs can share the same apply portal URL
+                    # (e.g. centralbank.bank.in). Skip setting job_url to avoid
+                    # unique constraint violation that would kill the entire insert.
+                    logger.warning(
+                        f"⚠️ job_url already exists in DB, skipping to avoid duplicate: "
+                        f"{job_url[:70]}..."
+                    )
+                    job_url = None
                 else:
                     insert_data['job_url'] = job_url
                     logger.info(f"✓ Apply Online link: {job_url[:70]}...")
@@ -259,6 +374,11 @@ class SupabaseClient:
                 insert_data['post_date'] = post_date
             if last_date:
                 insert_data['last_date'] = last_date
+            else:
+                logger.warning(
+                    f"⚠️ INSERTING JOB WITHOUT last_date — will never be auto-deleted! "
+                    f"Title: {job_data.get('title')}"
+                )
             
             if vacancies:
                 insert_data['vacancies'] = vacancies
@@ -301,6 +421,22 @@ class SupabaseClient:
                 insert_data['important_dates'] = json.dumps(important_dates)
 
             vacancy_details = job_data.get('vacancy_details')
+            # Bug #6 fix: LLM sometimes returns a list instead of dict
+            if isinstance(vacancy_details, list) and vacancy_details:
+                converted = {}
+                for item in vacancy_details:
+                    if isinstance(item, dict):
+                        name = (item.get('name') or item.get('post')
+                                or item.get('post_name') or str(item))
+                        count = (item.get('count') or item.get('vacancies')
+                                 or item.get('vacancy') or 0)
+                        try:
+                            converted[str(name)] = int(count)
+                        except (ValueError, TypeError):
+                            converted[str(name)] = 0
+                if converted:
+                    vacancy_details = converted
+                    logger.info(f"✓ Converted vacancy_details list→dict ({len(converted)} posts)")
             if isinstance(vacancy_details, dict) and vacancy_details:
                 insert_data['vacancy_details'] = json.dumps(vacancy_details)
 
@@ -326,6 +462,10 @@ class SupabaseClient:
                 insert_data['data_source'] = job_data.get('data_source')
             
             insert_data = {k: v for k, v in insert_data.items() if v is not None}
+            
+            # Bug #5 fix: Filter out unknown columns that the LLM hallucinates
+            # (e.g. 'application_url', 'organization_url', 'gdrive_link')
+            insert_data = {k: v for k, v in insert_data.items() if k in self.VALID_COLUMNS}
             
             if insert_data.get('blog_article'):
                 blog_len = len(insert_data['blog_article'])
