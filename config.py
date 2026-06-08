@@ -30,7 +30,7 @@ class Config:
     
     # All fields to extract (matches database schema)
     ALL_EXTRACTION_FIELDS = [
-        'title', 'organization', 'post_date', 'last_date', 'vacancies',
+        'title', 'organization', 'last_date', 'vacancies',
         'qualification', 'location', 'job_url', 'application_url',
         'official_website', 'pdf_url', 'category', 'advt_no',
         'salary', 'age_limit', 'application_fee', 'selection_process',

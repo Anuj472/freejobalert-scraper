@@ -231,9 +231,8 @@ class FreeJobAlertScraper:
         if not details_url.startswith('http'):
             details_url = urljoin(self.BASE_URL, details_url)
 
-        # Columns: Post Date | Recruitment Board | Exam/Post Name |
+        # Columns: Post Date (ignored) | Recruitment Board | Exam/Post Name |
         #          Qualification | Advt No | Last Date | More Info
-        post_date        = cells[0].get_text(strip=True)
         recruitment_board = cells[1].get_text(strip=True)
         exam_post_name   = cells[2].get_text(strip=True)
         qualification    = cells[3].get_text(strip=True)
@@ -245,7 +244,6 @@ class FreeJobAlertScraper:
             'title':        exam_post_name,
             'organization': recruitment_board,
             'qualification': qualification,
-            'post_date':    post_date,
             'last_date':    last_date,
             'advt_no':      advt_no,
             'details_url':  details_url,

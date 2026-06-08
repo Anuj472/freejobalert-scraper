@@ -156,7 +156,6 @@ class RobustJobParser:
             'vacancies': None,
             'title': '',
             'organization': '',
-            'post_date': '',
             'last_date': '',
             'qualification': '',
             'location': '',
@@ -196,8 +195,6 @@ class RobustJobParser:
         
         # Extract dates
         dates = self._extract_dates(full_text, content)
-        if dates.get('post_date'):
-            details['post_date'] = self._clean_date(dates['post_date'])
         if dates.get('last_date'):
             details['last_date'] = self._clean_date(dates['last_date'])
         
@@ -266,10 +263,6 @@ class RobustJobParser:
                 elif 'last date' in key_lower or 'closing date' in key_lower:
                     if not details['last_date']:
                         details['last_date'] = self._clean_date(value)
-                
-                elif 'post date' in key_lower or 'publish' in key_lower:
-                    if not details['post_date']:
-                        details['post_date'] = self._clean_date(value)
         
         # Extract from headings and sections
         headings = content.find_all(['h2', 'h3', 'h4', 'strong'])
@@ -496,7 +489,6 @@ class RobustJobParser:
     def _extract_dates(self, full_text: str, content: BeautifulSoup) -> Dict:
         """Extract important dates."""
         dates = {
-            'post_date': '',
             'last_date': '',
             'all_dates': {}
         }
@@ -506,8 +498,6 @@ class RobustJobParser:
             'last date': 'last_date',
             'closing date': 'last_date',
             'end date': 'last_date',
-            'post date': 'post_date',
-            'publish date': 'post_date',
             'start date': 'Application Start',
             'exam date': 'Exam Date',
             'result date': 'Result Date'
@@ -526,7 +516,7 @@ class RobustJobParser:
                 date_value = self._clean_date(date_context)
                 
                 if date_value:
-                    if field in ['last_date', 'post_date']:
+                    if field == 'last_date':
                         dates[field] = date_value
                     else:
                         dates['all_dates'][field] = date_value

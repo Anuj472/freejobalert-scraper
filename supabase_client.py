@@ -20,7 +20,7 @@ class SupabaseClient:
     # Postgres errors from LLM-hallucinated fields like 'application_url',
     # 'organization_url', 'gdrive_link', etc.
     VALID_COLUMNS = {
-        'title', 'organization', 'post_date', 'last_date', 'vacancies',
+        'title', 'organization', 'last_date', 'vacancies',
         'qualification', 'location', 'job_url', 'pdf_url', 'category',
         'advt_no', 'official_website', 'full_description', 'salary',
         'age_limit', 'application_fee', 'selection_process', 'how_to_apply',
@@ -300,7 +300,6 @@ class SupabaseClient:
                 logger.info(f"Job already exists: {job_data.get('title')}")
                 return None
             
-            post_date = self._parse_date(job_data.get('post_date'))
             last_date = self._parse_date(job_data.get('last_date'))
             
             # Fallback: try important_dates.last_date if top-level last_date failed
@@ -370,8 +369,6 @@ class SupabaseClient:
                 insert_data['freejobalert_url'] = fja_url
                 logger.debug(f"FreeJobAlert source: {fja_url[:70]}...")
             
-            if post_date:
-                insert_data['post_date'] = post_date
             if last_date:
                 insert_data['last_date'] = last_date
             else:
